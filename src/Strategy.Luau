@@ -6,15 +6,65 @@ local clone = cloneref or function(value)
 	return value
 end
 
+local Players = clone(game:GetService("Players"))
 local ReplicatedStorage = clone(game:GetService("ReplicatedStorage"))
 local RunService = clone(game:GetService("RunService"))
+local TeleportService = clone(game:GetService("TeleportService"))
 local Workspace = clone(game:GetService("Workspace"))
 
-local gameState = require(ReplicatedStorage.Shared.Modules.GameState)
-local net = require(ReplicatedStorage.Shared.Modules.Network)
+local lp = clone(Players.LocalPlayer)
+local shared = ReplicatedStorage:WaitForChild("Shared")
+local modules = shared:WaitForChild("Modules")
+local gameState = require(modules:WaitForChild("GameState"))
+local net = require(modules:WaitForChild("Network"))
+local lobbyId = 3260590327
+local repoRoot = getgenv().AutoStratRoot or "https://raw.githubusercontent.com/tessa-says-hi/auto-strat/main/"
 
 local Strategy = {}
 Strategy.__index = Strategy
+
+local function quote(value)
+	return string.format("%q", tostring(value or ""))
+end
+
+local function number(value)
+	if value ~= value then
+		return "0/0"
+	elseif value == math.huge then
+		return "math.huge"
+	elseif value == -math.huge then
+		return "-math.huge"
+	end
+	return string.format("%.17g", value)
+end
+
+local function isArray(value)
+	local count = 0
+	for key in pairs(value) do
+		if type(key) ~= "number" or key < 1 or key % 1 ~= 0 then
+			return false
+		end
+		count = math.max(count, key)
+	end
+	for index = 1, count do
+		if value[index] == nil then
+			return false
+		end
+	end
+	return true, count
+end
+
+local function teleportQueue()
+	if type(queue_on_teleport) == "function" then
+		return queue_on_teleport
+	elseif type(queueonteleport) == "function" then
+		return queueonteleport
+	elseif type(syn) == "table" and type(syn.queue_on_teleport) == "function" then
+		return syn.queue_on_teleport
+	elseif type(fluxus) == "table" and type(fluxus.queue_on_teleport) == "function" then
+		return fluxus.queue_on_teleport
+	end
+end
 
 local function timerValue()
 	local state = ReplicatedStorage:FindFirstChild("State")
@@ -74,6 +124,109 @@ end
 
 function Strategy:Enum(path)
 	return { __kind = "enum", path = path }
+end
+
+function Strategy:Import(data)
+	if type(data) ~= "table" then
+		return self
+	end
+	self.actions = data.actions or {}
+	self.loadout = data.loadout or {}
+	self.meta = data.meta or {}
+	self.name = tostring(data.name or "Strategy")
+	self.nextTower = tonumber(data.nextTower) or 0
+	self.towers = {}
+	return self
+end
+
+function Strategy:_literal(value, seen)
+	local kind = typeof(value)
+	if kind == "nil" then
+		return "nil"
+	elseif kind == "boolean" then
+		return tostring(value)
+	elseif kind == "number" then
+		return number(value)
+	elseif kind == "string" then
+		return quote(value)
+	elseif kind == "Vector2" then
+		return string.format("Vector2.new(%s, %s)", number(value.X), number(value.Y))
+	elseif kind == "Vector3" then
+		return string.format("Vector3.new(%s, %s, %s)", number(value.X), number(value.Y), number(value.Z))
+	elseif kind == "Color3" then
+		return string.format("Color3.new(%s, %s, %s)", number(value.R), number(value.G), number(value.B))
+	elseif kind == "CFrame" then
+		local values = { value:GetComponents() }
+		for index, item in ipairs(values) do
+			values[index] = number(item)
+		end
+		return "CFrame.new(" .. table.concat(values, ", ") .. ")"
+	elseif kind ~= "table" then
+		return quote(tostring(value))
+	end
+
+	seen = seen or {}
+	if seen[value] then
+		return "nil"
+	end
+	seen[value] = true
+	local array, count = isArray(value)
+	local parts = {}
+	if array then
+		for index = 1, count do
+			parts[index] = self:_literal(value[index], seen)
+		end
+	else
+		local keys = {}
+		for key in pairs(value) do
+			keys[#keys + 1] = key
+		end
+		table.sort(keys, function(a, b)
+			return tostring(a) < tostring(b)
+		end)
+		for _, key in ipairs(keys) do
+			local left
+			if type(key) == "string" and key:match("^[%a_][%w_]*$") then
+				left = key
+			else
+				left = "[" .. self:_literal(key, seen) .. "]"
+			end
+			parts[#parts + 1] = left .. " = " .. self:_literal(value[key], seen)
+		end
+	end
+	seen[value] = nil
+	return "{ " .. table.concat(parts, ", ") .. " }"
+end
+
+function Strategy:_resume()
+	local data = {
+		actions = self.actions,
+		loadout = self.loadout,
+		meta = self.meta,
+		name = self.name,
+		nextTower = self.nextTower,
+	}
+	local url = repoRoot .. "src/Strategy.Luau"
+	return table.concat({
+		"repeat task.wait() until game:IsLoaded() and game.PlaceId ~= 0",
+		"getgenv().AutoStratRoot = " .. quote(repoRoot),
+		"local TDS = loadstring(game:HttpGet(" .. quote(url) .. ", true))()",
+		"getgenv().AutoStratRoot = nil",
+		"TDS:Import(" .. self:_literal(data) .. ")",
+		"TDS:Run()",
+	}, "\n")
+end
+
+function Strategy:_queue()
+	local queue = teleportQueue()
+	if not queue then
+		return false, "This executor does not support queue_on_teleport."
+	end
+	local ok, err = pcall(queue, self:_resume())
+	if not ok then
+		return false, "Could not queue the strategy: " .. tostring(err)
+	end
+	return true
 end
 
 function Strategy:_add(kind, value, wave, minute, second, millisecond)
@@ -194,6 +347,105 @@ function Strategy:_resolve(value, seen)
 	return out
 end
 
+function Strategy:_mode()
+	local mode = tostring(self.meta.Mode or ""):lower():gsub("%s+", "")
+	local modes = {
+		hardcore = "hardcore",
+		pvp = "pvp",
+		sandbox = "sandbox",
+		survival = "survival",
+	}
+	return modes[mode]
+end
+
+function Strategy:_matchmake()
+	local mode = self:_mode()
+	if not mode then
+		return false, "Unsupported gamemode: " .. tostring(self.meta.Mode)
+	end
+	local queued, queueErr = self:_queue()
+	if not queued then
+		return false, queueErr
+	end
+
+	local ok, uiNet = pcall(require, shared:WaitForChild("UI"):WaitForChild("Network"))
+	if not ok then
+		return false, "Could not load lobby matchmaking: " .. tostring(uiNet)
+	end
+	local opts = {
+		count = 1,
+		mode = mode,
+	}
+	if mode ~= "sandbox" and self.meta.Difficulty and self.meta.Difficulty ~= "" then
+		opts.difficulty = self.meta.Difficulty
+	end
+
+	self.status = "Starting solo " .. tostring(self.meta.Mode)
+	local channel = uiNet.Channel("Multiplayer")
+	local called, success, msg = pcall(channel.InvokeServer, channel, "v2:start", opts)
+	if not called then
+		return false, "Matchmaking failed: " .. tostring(success)
+	elseif success ~= true then
+		return false, tostring(msg or success)
+	end
+	self.status = "Matchmaking..."
+	return true
+end
+
+function Strategy:_selectMap()
+	local wanted = tostring(self.meta.Map or "")
+	local voting = net.Channel("LobbyVoting")
+	local selected = wanted == "" or tostring(gameState.MapName or "") == wanted
+
+	if not selected and self.meta.Override then
+		local ok, success = pcall(voting.InvokeServer, voting, "Override", wanted)
+		selected = ok and success == true
+	end
+
+	if not selected then
+		for index = 1, 4 do
+			if Workspace:GetAttribute("Map" .. index) == wanted then
+				local char = lp.Character
+				local pos = char and char:GetPivot().Position or Vector3.zero
+				voting:FireServer("Vote", wanted, pos)
+				selected = true
+				break
+			end
+		end
+	end
+
+	if not selected then
+		local queued, err = self:_queue()
+		if not queued then
+			return false, err
+		end
+		self.status = "Retrying for " .. wanted
+		local ok, tpErr = pcall(TeleportService.Teleport, TeleportService, lobbyId, lp)
+		return false, ok and self.status or "Lobby retry failed: " .. tostring(tpErr)
+	end
+
+	voting:FireServer("Ready")
+	self.status = "Waiting for " .. (wanted ~= "" and wanted or "the match")
+	return true
+end
+
+function Strategy:_prepare(seq)
+	if gameState.GameStarted then
+		return true
+	end
+	local selected, err = self:_selectMap()
+	if not selected then
+		return false, err
+	end
+	while self.running and self.seq == seq do
+		if gameState.GameStarted then
+			return true
+		end
+		RunService.Heartbeat:Wait()
+	end
+	return false, "Stopped"
+end
+
 function Strategy:_bindClock()
 	if self.timerConn then
 		self.timerConn:Disconnect()
@@ -301,11 +553,32 @@ function Strategy:Run()
 	self.running = true
 	self.seq = self.seq + 1
 	local seq = self.seq
-	self.status = "Waiting for actions"
-	self:_bindClock()
 	getgenv().AutoStratRunner = self
 
+	if game.PlaceId == lobbyId then
+		self.status = "Preparing matchmaking"
+		task.spawn(function()
+			local ok, err = self:_matchmake()
+			if self.seq == seq and not ok then
+				self.running = false
+				self.status = tostring(err)
+			end
+		end)
+		return self
+	end
+
 	task.spawn(function()
+		local ready, readyErr = self:_prepare(seq)
+		if not ready then
+			if self.seq == seq then
+				self.running = false
+				self.status = tostring(readyErr or self.status)
+			end
+			return
+		end
+
+		self.status = "Waiting for actions"
+		self:_bindClock()
 		local failed = false
 		for index, action in ipairs(self.actions) do
 			if not self:_wait(action, seq) then
