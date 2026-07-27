@@ -468,7 +468,7 @@ function Recorder:Install()
 		return false
 	end
 
-	local oldInvoke = hookfunction(invoke, function(ch, action, ...)
+	local okInvoke, oldInvoke = pcall(hookfunction, invoke, function(ch, action, ...)
 		local args = table.pack(...)
 		local result = table.pack(self.oldInvoke(ch, action, ...))
 		local ok, err = pcall(self._captureInvoke, self, ch.Channel, action, args, result)
@@ -477,10 +477,14 @@ function Recorder:Install()
 		end
 		return table.unpack(result, 1, result.n)
 	end)
-
+	if not okInvoke or type(oldInvoke) ~= "function" then
+		self.status = "Could not hook InvokeServer: " .. tostring(oldInvoke)
+		return false
+	end
 	self.oldInvoke = oldInvoke
+	self.invoke = invoke
 
-	local oldFire = hookfunction(fire, function(ch, action, ...)
+	local okFire, oldFire = pcall(hookfunction, fire, function(ch, action, ...)
 		local args = table.pack(...)
 		self.oldFire(ch, action, ...)
 		local ok, err = pcall(self._captureFire, self, ch.Channel, action, args)
@@ -488,9 +492,14 @@ function Recorder:Install()
 			self.status = "Recorder hook error: " .. tostring(err)
 		end
 	end)
-
+	if not okFire or type(oldFire) ~= "function" then
+		pcall(hookfunction, invoke, oldInvoke)
+		self.invoke = nil
+		self.oldInvoke = nil
+		self.status = "Could not hook FireServer: " .. tostring(oldFire)
+		return false
+	end
 	self.oldFire = oldFire
-	self.invoke = invoke
 	self.fire = fire
 	self.installed = true
 	return true
