@@ -21,6 +21,6 @@ The recorder currently captures:
 - stable tower IDs and millisecond action timestamps
 - raw fallback calls for other Troops, Voting, and LobbyVoting actions
 
-The first replay milestone supports the recorded in-match actions. Automated lobby
-loadout changes, matchmaking, map retries, and result handling are the next build
-stage.
+Replay now starts solo matchmaking from the lobby, queues itself across teleport,
+selects the recorded map when needed, and then runs the recorded in-match actions.
+Automatic loadout changes and result handling are the next build stage.
