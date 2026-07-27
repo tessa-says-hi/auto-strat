@@ -25,20 +25,19 @@ if prev and type(prev.Stop) == "function" then
 	pcall(prev.Stop, prev)
 end
 
-local repoRoot = env.AutoStratRepo or "https://raw.githubusercontent.com/tessa-says-hi/auto-strat/main/"
-local function loadRepo(path)
+do
+	local path = "src/Recorder.Luau"
+	local root = env.AutoStratRepo or "https://raw.githubusercontent.com/tessa-says-hi/auto-strat/main/"
 	local source = type(env.AutoStratSources) == "table" and env.AutoStratSources[path]
 	if not source then
-		source = game:HttpGet(repoRoot .. path, true)
+		source = game:HttpGet(root .. path, true)
 	end
 	local chunk, err = loadstring(source)
 	if not chunk then
 		error(string.format("Could not load %s: %s", path, tostring(err)), 0)
 	end
-	return chunk()
+	env.AutoStratRecorderClass = chunk()
 end
-
-local Recorder = loadRepo("src/Recorder.Luau")
 
 local function clone(value)
 	if type(cloneref) == "function" then
@@ -206,8 +205,8 @@ local AutoGatlin = {
 	UIError = nil,
 }
 
-local recorder = Recorder.new()
-AutoGatlin.Recorder = recorder
+AutoGatlin.Recorder = env.AutoStratRecorderClass.new()
+env.AutoStratRecorderClass = nil
 
 local current
 local firing = false
@@ -3219,12 +3218,12 @@ function kawaiiUi.main(window)
 		Name = "Strategy Name",
 		Description = "Used for the saved file and generated strategy.",
 		PlaceholderText = "MyStrategy",
-		CurrentValue = recorder.name,
+		CurrentValue = AutoGatlin.Recorder.name,
 		Numeric = false,
 		MaxCharacters = 48,
 		Enter = false,
 		Callback = function(value)
-			recorder:SetName(value)
+			AutoGatlin.Recorder:SetName(value)
 		end,
 	}, "StrategyName")
 
@@ -3232,7 +3231,7 @@ function kawaiiUi.main(window)
 		Name = "Start Recorder",
 		Description = "Starts a clean recording from this moment.",
 		Callback = function()
-			recorder:Start()
+			AutoGatlin.Recorder:Start()
 		end,
 	})
 
@@ -3240,7 +3239,7 @@ function kawaiiUi.main(window)
 		Name = "Stop Recorder",
 		Description = "Stops recording without clearing captured actions.",
 		Callback = function()
-			recorder:Stop()
+			AutoGatlin.Recorder:Stop()
 		end,
 	})
 
@@ -3248,7 +3247,7 @@ function kawaiiUi.main(window)
 		Name = "Copy Strategy",
 		Description = "Copies the generated replay script.",
 		Callback = function()
-			recorder:Copy()
+			AutoGatlin.Recorder:Copy()
 		end,
 	})
 
@@ -3256,7 +3255,7 @@ function kawaiiUi.main(window)
 		Name = "Save Strategy",
 		Description = "Saves the generated replay script in auto-strat.",
 		Callback = function()
-			recorder:Save()
+			AutoGatlin.Recorder:Save()
 		end,
 	})
 
@@ -3264,13 +3263,13 @@ function kawaiiUi.main(window)
 		Name = "Clear Recording",
 		Description = "Clears every captured action.",
 		Callback = function()
-			recorder:Clear()
+			AutoGatlin.Recorder:Clear()
 		end,
 	})
 
 	AutoGatlin.RecorderBox = recorderUi:CreateParagraph({
 		Title = "Recorder Status",
-		Text = recorder:Status(),
+		Text = AutoGatlin.Recorder:Status(),
 	})
 
 	local stacker = main:CreateSection("Tower Sandwich Maker")
@@ -3787,7 +3786,7 @@ function kawaiiUi.build(seq)
 			if AutoGatlin.RecorderBox then
 				AutoGatlin.RecorderBox:Set({
 					Title = "Recorder Status",
-					Text = recorder:Status(),
+					Text = AutoGatlin.Recorder:Status(),
 				})
 			end
 			task.wait(0.15)
@@ -6120,7 +6119,7 @@ function AutoGatlin:Start()
 	self.Running = true
 	self.Status = self.Enabled and "Starting" or "Disabled"
 	env.AutoGatlin = self
-	recorder:Install()
+	self.Recorder:Install()
 	self:BuildRoundTimer()
 
 	if not self.InspectConn then
@@ -6241,10 +6240,10 @@ function AutoGatlin:Stop()
 	self:SetShowUpgradeRanges(false)
 	self:SetAlwaysShowDjRanges(false)
 	self:UnbindStacker()
-	if recorder.active then
-		recorder:Stop()
+	if self.Recorder.active then
+		self.Recorder:Stop()
 	end
-	recorder:Destroy()
+	self.Recorder:Destroy()
 	self:DestroyRoundTimer()
 
 	if drawConn then
