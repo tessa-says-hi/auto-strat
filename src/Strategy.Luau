@@ -89,6 +89,26 @@ local function split(value)
 	return out
 end
 
+local function sameNames(left, right)
+	if #left ~= #right then
+		return false
+	end
+	local names = {}
+	for _, name in ipairs(left) do
+		names[name] = (names[name] or 0) + 1
+	end
+	for _, name in ipairs(right) do
+		if not names[name] then
+			return false
+		end
+		names[name] = names[name] - 1
+		if names[name] == 0 then
+			names[name] = nil
+		end
+	end
+	return next(names) == nil
+end
+
 function Strategy.new()
 	return setmetatable({
 		actions = {},
@@ -380,21 +400,117 @@ function Strategy:_mode()
 	return modes[mode]
 end
 
+function Strategy:_prepareLoadout(uiNet)
+	if #self.loadout == 0 then
+		return true
+	end
+
+	local ok, cache = pcall(require, shared:WaitForChild("UI"):WaitForChild("Cache"))
+	if not ok then
+		return false, "Could not load inventory: " .. tostring(cache)
+	end
+
+	local pvp = self:_mode() == "pvp"
+	local equipped = cache(pvp and "Equipped.PVPTroops" or "Equipped.Troops")
+	local inventory = cache("Inventory.Troops")
+	local desired = {}
+	local needed = {}
+	for slot, item in ipairs(self.loadout) do
+		local name = type(item) == "table" and item.Name or item
+		name = tostring(name or "")
+		if name == "" then
+			return false, "Loadout slot " .. slot .. " has no tower."
+		elseif needed[name] then
+			return false, "Loadout contains " .. name .. " more than once."
+		end
+		desired[slot] = name
+		needed[name] = true
+	end
+
+	self.status = "Loading inventory"
+	local deadline = os.clock() + 15
+	local owned = inventory:GetValue()
+	while (type(owned) ~= "table" or next(owned) == nil) and os.clock() < deadline do
+		RunService.Heartbeat:Wait()
+		owned = inventory:GetValue()
+	end
+	for _, name in ipairs(desired) do
+		if type(owned) ~= "table" or owned[name] == nil then
+			return false, "Required tower is not owned: " .. name
+		end
+	end
+
+	local function current()
+		local value = equipped:GetValue()
+		return type(value) == "table" and value or {}
+	end
+
+	if sameNames(current(), desired) then
+		return true
+	end
+
+	self.status = "Preparing loadout"
+	local channel = uiNet.Channel("Inventory")
+	for _, name in ipairs(current()) do
+		if not needed[name] then
+			channel:FireServer("Unequip", pvp and "PVPTower" or "Tower", name)
+		end
+	end
+
+	deadline = os.clock() + 8
+	while os.clock() < deadline do
+		local ready = true
+		for _, name in ipairs(current()) do
+			if not needed[name] then
+				ready = false
+				break
+			end
+		end
+		if ready then
+			break
+		end
+		RunService.Heartbeat:Wait()
+	end
+
+	local have = {}
+	for _, name in ipairs(current()) do
+		have[name] = true
+	end
+	for _, name in ipairs(desired) do
+		if not have[name] then
+			channel:FireServer("Equip", pvp and "PVPTower" or "Tower", name)
+		end
+	end
+
+	deadline = os.clock() + 8
+	while os.clock() < deadline do
+		if sameNames(current(), desired) then
+			return true
+		end
+		RunService.Heartbeat:Wait()
+	end
+	return false, "Could not equip the required towers."
+end
+
 function Strategy:_matchmake()
 	local mode = self:_mode()
 	if not mode then
 		return false, "Unsupported gamemode: " .. tostring(self.meta.Mode)
+	end
+
+	local ok, uiNet = pcall(require, shared:WaitForChild("UI"):WaitForChild("Network"))
+	if not ok then
+		return false, "Could not load lobby matchmaking: " .. tostring(uiNet)
+	end
+	local ready, loadoutErr = self:_prepareLoadout(uiNet)
+	if not ready then
+		return false, loadoutErr
 	end
 	local queued, queueErr = self:_queue()
 	if not queued then
 		return false, queueErr
 	end
 
-	local ok, uiNet = pcall(require, shared:WaitForChild("UI"):WaitForChild("Network"))
-	if not ok then
-		self:_clearQueue()
-		return false, "Could not load lobby matchmaking: " .. tostring(uiNet)
-	end
 	local opts = {
 		count = 1,
 		mode = mode,
