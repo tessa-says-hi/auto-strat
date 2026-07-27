@@ -65,6 +65,16 @@ local function teleportQueue()
 	end
 end
 
+local function clearTeleportQueue()
+	if type(clear_teleport_queue) == "function" then
+		return clear_teleport_queue
+	elseif type(clearqueueonteleport) == "function" then
+		return clearqueueonteleport
+	elseif type(clearteleportqueue) == "function" then
+		return clearteleportqueue
+	end
+end
+
 local function timerValue()
 	local state = ReplicatedStorage:FindFirstChild("State")
 	local timer = state and state:FindFirstChild("Timer")
@@ -86,6 +96,7 @@ function Strategy.new()
 		meta = {},
 		name = "Strategy",
 		nextTower = 0,
+		queued = false,
 		running = false,
 		seq = 0,
 		status = "Idle",
@@ -225,7 +236,19 @@ function Strategy:_queue()
 	if not ok then
 		return false, "Could not queue the strategy: " .. tostring(err)
 	end
+	self.queued = true
 	return true
+end
+
+function Strategy:_clearQueue()
+	if not self.queued then
+		return
+	end
+	local clear = clearTeleportQueue()
+	if clear then
+		pcall(clear)
+	end
+	self.queued = false
 end
 
 function Strategy:_add(kind, value, wave, minute, second, millisecond)
@@ -369,6 +392,7 @@ function Strategy:_matchmake()
 
 	local ok, uiNet = pcall(require, shared:WaitForChild("UI"):WaitForChild("Network"))
 	if not ok then
+		self:_clearQueue()
 		return false, "Could not load lobby matchmaking: " .. tostring(uiNet)
 	end
 	local opts = {
@@ -383,8 +407,10 @@ function Strategy:_matchmake()
 	local channel = uiNet.Channel("Multiplayer")
 	local called, success, msg = pcall(channel.InvokeServer, channel, "v2:start", opts)
 	if not called then
+		self:_clearQueue()
 		return false, "Matchmaking failed: " .. tostring(success)
 	elseif success ~= true then
+		self:_clearQueue()
 		return false, tostring(msg or success)
 	end
 	self.status = "Matchmaking..."
@@ -428,9 +454,12 @@ function Strategy:_prepare(seq)
 	end
 	if self:_mode() == "sandbox" then
 		self.status = "Waiting for Sandbox"
+		local started = os.clock()
 		while self.running and self.seq == seq do
 			if gameState.GameStarted then
 				return true
+			elseif os.clock() - started >= 30 then
+				return false, "Sandbox did not start."
 			end
 			RunService.Heartbeat:Wait()
 		end
@@ -613,6 +642,7 @@ function Strategy:Stop()
 	self.seq = self.seq + 1
 	self.running = false
 	self.status = "Stopped"
+	self:_clearQueue()
 	if self.timerConn then
 		self.timerConn:Disconnect()
 		self.timerConn = nil
