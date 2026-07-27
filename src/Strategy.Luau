@@ -9,7 +9,6 @@ end
 local Players = clone(game:GetService("Players"))
 local ReplicatedStorage = clone(game:GetService("ReplicatedStorage"))
 local RunService = clone(game:GetService("RunService"))
-local TeleportService = clone(game:GetService("TeleportService"))
 local Workspace = clone(game:GetService("Workspace"))
 
 local lp = clone(Players.LocalPlayer)
@@ -415,13 +414,7 @@ function Strategy:_selectMap()
 	end
 
 	if not selected then
-		local queued, err = self:_queue()
-		if not queued then
-			return false, err
-		end
-		self.status = "Retrying for " .. wanted
-		local ok, tpErr = pcall(TeleportService.Teleport, TeleportService, lobbyId, lp)
-		return false, ok and self.status or "Lobby retry failed: " .. tostring(tpErr)
+		return false, "Map unavailable: " .. wanted
 	end
 
 	voting:FireServer("Ready")
@@ -430,6 +423,20 @@ function Strategy:_selectMap()
 end
 
 function Strategy:_prepare(seq)
+	if gameState.GameStarted then
+		return true
+	end
+	if self:_mode() == "sandbox" then
+		self.status = "Waiting for Sandbox"
+		while self.running and self.seq == seq do
+			if gameState.GameStarted then
+				return true
+			end
+			RunService.Heartbeat:Wait()
+		end
+		return false, "Stopped"
+	end
+	task.wait(1)
 	if gameState.GameStarted then
 		return true
 	end
