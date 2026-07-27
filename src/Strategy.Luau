@@ -16,6 +16,8 @@ local shared = ReplicatedStorage:WaitForChild("Shared")
 local modules = shared:WaitForChild("Modules")
 local gameState = require(modules:WaitForChild("GameState"))
 local net = require(modules:WaitForChild("Network"))
+local newNet = require(modules:WaitForChild("NewNetwork"))
+local gameManager = newNet.Channel("GameManager")
 local lobbyId = 3260590327
 local repoRoot = getgenv().AutoStratRoot or "https://raw.githubusercontent.com/tessa-says-hi/auto-strat/main/"
 
@@ -117,6 +119,7 @@ function Strategy.new()
 		name = "Strategy",
 		nextTower = 0,
 		queued = false,
+		rematching = false,
 		running = false,
 		seq = 0,
 		status = "Idle",
@@ -269,6 +272,46 @@ function Strategy:_clearQueue()
 		pcall(clear)
 	end
 	self.queued = false
+end
+
+function Strategy:_clearRematch()
+	if self.rematchConn then
+		self.rematchConn:Disconnect()
+		self.rematchConn = nil
+	end
+end
+
+function Strategy:_bindRematch(seq)
+	self:_clearRematch()
+	self.rematching = false
+	if self:_mode() == "sandbox" or not gameState.Replicator then
+		return
+	end
+
+	local function rematch()
+		if self.seq ~= seq or self.rematching or gameState.GameOver ~= true or gameState.WinningTeam == nil then
+			return
+		end
+		self.rematching = true
+		self:_clearRematch()
+		self.status = "Queueing Play Again"
+		local ok, queued, err = pcall(self._queue, self)
+		if not ok or queued ~= true then
+			self.status = tostring(err or queued or "Could not queue Play Again")
+			self.rematching = false
+			return
+		end
+		self.status = "Playing again"
+		local sent, sendErr = pcall(gameManager.fireServer, gameManager, "Rematch")
+		if not sent then
+			self:_clearQueue()
+			self.status = "Play Again failed: " .. tostring(sendErr)
+			self.rematching = false
+		end
+	end
+
+	self.rematchConn = gameState.Replicator.Changed:Connect(rematch)
+	task.defer(rematch)
 end
 
 function Strategy:_add(kind, value, wave, minute, second, millisecond)
@@ -541,14 +584,14 @@ function Strategy:_selectMap()
 	if not selected and self.meta.Override then
 		local ok, success = pcall(voting.InvokeServer, voting, "Override", wanted)
 		selected = ok and success == true
+		if selected then
+			RunService.Heartbeat:Wait()
+		end
 	end
 
 	if not selected then
 		for index = 1, 4 do
 			if Workspace:GetAttribute("Map" .. index) == wanted then
-				local char = lp.Character
-				local pos = char and char:GetPivot().Position or Vector3.zero
-				voting:FireServer("Vote", wanted, pos)
 				selected = true
 				break
 			end
@@ -557,6 +600,15 @@ function Strategy:_selectMap()
 
 	if not selected then
 		return false, "Map unavailable: " .. wanted
+	end
+
+	if wanted ~= "" then
+		local char = lp.Character
+		local pos = char and char:GetPivot().Position or Vector3.zero
+		local voted, err = pcall(voting.FireServer, voting, "Vote", wanted, pos)
+		if not voted then
+			return false, "Map vote failed: " .. tostring(err)
+		end
 	end
 
 	voting:FireServer("Ready")
@@ -719,6 +771,7 @@ function Strategy:Run()
 		return self
 	end
 
+	self:_bindRematch(seq)
 	task.spawn(function()
 		local ready, readyErr = self:_prepare(seq)
 		if not ready then
@@ -758,6 +811,8 @@ function Strategy:Stop()
 	self.seq = self.seq + 1
 	self.running = false
 	self.status = "Stopped"
+	self:_clearRematch()
+	self.rematching = false
 	self:_clearQueue()
 	if self.timerConn then
 		self.timerConn:Disconnect()
