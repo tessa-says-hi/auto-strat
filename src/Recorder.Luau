@@ -444,9 +444,10 @@ function Recorder:_captureInvoke(channel, action, args, result)
 end
 
 function Recorder:_captureFire(channel, action, args)
-	if self.active then
-		self:_raw(channel, action, args, false)
+	if not self.active or (channel == "LobbyVoting" and action == "Ready") then
+		return
 	end
+	self:_raw(channel, action, args, false)
 end
 
 function Recorder:Install()
@@ -637,7 +638,6 @@ function Recorder:Export()
 
 	local lines = {
 		'local TDS = loadstring(game:HttpGet("https://raw.githubusercontent.com/tessa-says-hi/auto-strat/main/src/Strategy.Luau", true))()',
-		"TDS:Name(" .. quote(self.name) .. ")",
 	}
 	local loadoutArgs = {}
 	for _, item in ipairs(self.meta.Loadout or {}) do

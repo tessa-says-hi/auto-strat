@@ -19,9 +19,33 @@ local gameState = require(modules:WaitForChild("GameState"))
 local net = require(modules:WaitForChild("Network"))
 local newNet = require(modules:WaitForChild("NewNetwork"))
 local gameManager = newNet.Channel("GameManager")
+local remoteEvent = clone(ReplicatedStorage:WaitForChild("RemoteEvent"))
 local remoteFunction = clone(ReplicatedStorage:WaitForChild("RemoteFunction"))
 local lobbyId = 3260590327
 local repoRoot = getgenv().AutoStratRoot or "https://raw.githubusercontent.com/tessa-says-hi/auto-strat/main/"
+local hudUrl = "https://raw.githubusercontent.com/tessa-says-hi/auto-strat/main/GUI/StrategyHUD.Luau"
+local uiUrl = "https://raw.githubusercontent.com/tessa-says-hi/auto-strat/main/GUI/UI.Luau"
+local hudClass
+
+local function loadRemote(url, name)
+	local source = game:HttpGet(url, true)
+	local chunk, err = loadstring(source)
+	if not chunk then
+		error(string.format("Could not load %s: %s", name, tostring(err)), 0)
+	end
+	return chunk()
+end
+
+local function uiLibrary()
+	local env = getgenv()
+	local library = env.AutoStratUILibrary
+	if type(library) == "table" and type(library.CreateWindow) == "function" then
+		return library
+	end
+	library = loadRemote(uiUrl, "strategy UI")
+	env.AutoStratUILibrary = library
+	return library
+end
 
 local Strategy = {}
 Strategy.__index = Strategy
@@ -283,6 +307,52 @@ function Strategy:_clearRematch()
 	end
 end
 
+function Strategy:_clearHud()
+	if not self.hud then
+		return
+	end
+	pcall(self.hud.Destroy, self.hud)
+	self.hud = nil
+end
+
+function Strategy:_showHud(seq)
+	if self.hud or self.seq ~= seq then
+		return
+	end
+
+	local ok, hud = pcall(function()
+		hudClass = hudClass or loadRemote(hudUrl, "strategy HUD")
+		return hudClass.new({
+			abort = function()
+				if self.seq == seq then
+					self:Stop()
+				end
+			end,
+			gameState = gameState,
+			library = uiLibrary(),
+			strategy = self,
+		})
+	end)
+	if not ok then
+		self.hudError = tostring(hud)
+		return
+	elseif self.seq ~= seq then
+		hud:Destroy()
+		return
+	end
+	self.hud = hud
+end
+
+function Strategy:_refreshHud()
+	if not self.hud then
+		return
+	end
+	local ok = pcall(self.hud.Refresh, self.hud)
+	if not ok then
+		self:_clearHud()
+	end
+end
+
 function Strategy:_clearReady()
 	if self.readyAddedConn then
 		self.readyAddedConn:Disconnect()
@@ -291,6 +361,21 @@ function Strategy:_clearReady()
 	if self.readyChangedConn then
 		self.readyChangedConn:Disconnect()
 		self.readyChangedConn = nil
+	end
+end
+
+function Strategy:_clearLobbyVote()
+	if self.lobbyChildConn then
+		self.lobbyChildConn:Disconnect()
+		self.lobbyChildConn = nil
+	end
+	if self.lobbyAttributeConn then
+		self.lobbyAttributeConn:Disconnect()
+		self.lobbyAttributeConn = nil
+	end
+	if self.lobbyEventConn then
+		self.lobbyEventConn:Disconnect()
+		self.lobbyEventConn = nil
 	end
 end
 
@@ -314,6 +399,7 @@ function Strategy:_bindRematch(seq)
 		end
 		self.rematching = true
 		self:_clearRematch()
+		self:_clearHud()
 		self.status = "Queueing Play Again"
 		local ok, queued, err = pcall(self._queue, self)
 		if not ok or queued ~= true then
@@ -650,37 +736,113 @@ end
 
 function Strategy:_selectMap(seq)
 	local wanted = tostring(self.meta.Map or "")
-	local voting = net.Channel("LobbyVoting")
-	local selected = wanted == "" or tostring(gameState.MapName or "") == wanted
+	self:_clearLobbyVote()
 
-	if not selected and self.meta.Override then
-		local ok, success = pcall(voting.InvokeServer, voting, "Override", wanted)
-		selected = ok and success == true
+	local manager = CollectionService:GetTagged("VoteManager")[1]
+	if manager and manager:GetAttribute("Title") == "Ready?" and manager:GetAttribute("Enabled") == true then
+		return self:_bindReady(seq, wanted ~= "" and wanted or "the match")
 	end
 
-	if not selected then
+	local function boardsReady()
 		for index = 1, 4 do
-			if Workspace:GetAttribute("Map" .. index) == wanted then
-				selected = true
-				break
+			if tostring(Workspace:GetAttribute("Map" .. index) or "") ~= "" then
+				return true
 			end
 		end
+		return false
 	end
 
-	if not selected then
-		return false, "Map unavailable: " .. wanted
-	end
+	local begun = false
+	local function begin()
+		if
+			begun
+			or self.seq ~= seq
+			or not self.running
+			or not Workspace:FindFirstChild("IntermissionLobby")
+			or not boardsReady()
+		then
+			return
+		end
+		begun = true
+		self:_clearLobbyVote()
 
-	if wanted ~= "" then
-		local char = lp.Character
-		local pos = char and char:GetPivot().Position or Vector3.zero
-		local voted, err = pcall(voting.FireServer, voting, "Vote", wanted, pos)
-		if not voted then
-			return false, "Map vote failed: " .. tostring(err)
+		if wanted == "" then
+			remoteEvent:FireServer("LobbyVoting", "Ready")
+			self:_bindReady(seq, "the match")
+			return
+		end
+
+		local function available()
+			for index = 1, 4 do
+				if Workspace:GetAttribute("Map" .. index) == wanted then
+					return true
+				end
+			end
+			return false
+		end
+
+		local voted = false
+		local function vote()
+			if voted or self.seq ~= seq or not self.running then
+				return
+			end
+			voted = true
+			self.status = "Voting for " .. wanted
+			local char = lp.Character
+			local pos = char and char:GetPivot().Position or Vector3.zero
+			remoteEvent:FireServer("LobbyVoting", "Vote", wanted, pos)
+		end
+
+		self.lobbyEventConn = remoteEvent.OnClientEvent:Connect(function(channel, action, a, _, data)
+			if channel ~= "LobbyVoting" or self.seq ~= seq or not self.running then
+				return
+			end
+			if action == "Override" and tostring(data or "") == wanted then
+				vote()
+			elseif action == "Vote" and a == lp and type(data) == "table" and tostring(data.map or "") == wanted then
+				self:_clearLobbyVote()
+				self.status = "Readying " .. wanted
+				remoteEvent:FireServer("LobbyVoting", "Ready")
+				self:_bindReady(seq, wanted)
+			end
+		end)
+
+		if available() then
+			vote()
+			return
+		elseif not self.meta.Override then
+			self:_clearLobbyVote()
+			self:_clearStarted()
+			self.running = false
+			self.status = "Map unavailable: " .. wanted
+			return
+		end
+
+		self.status = "Overriding map to " .. wanted
+		local called, success, err =
+			pcall(remoteFunction.InvokeServer, remoteFunction, "LobbyVoting", "Override", wanted)
+		if not called or success ~= true then
+			self:_clearLobbyVote()
+			self:_clearStarted()
+			self.running = false
+			self.status = "Map override failed: " .. tostring(err or success)
+		elseif available() then
+			vote()
 		end
 	end
 
-	return self:_bindReady(seq, wanted ~= "" and wanted or "the match")
+	self.lobbyChildConn = Workspace.ChildAdded:Connect(function(child)
+		if child.Name == "IntermissionLobby" then
+			begin()
+		end
+	end)
+	self.lobbyAttributeConn = Workspace.AttributeChanged:Connect(function(attribute)
+		if attribute:match("^Map[1-4]$") then
+			begin()
+		end
+	end)
+	begin()
+	return true
 end
 
 function Strategy:_bindStarted(seq)
@@ -693,6 +855,7 @@ function Strategy:_bindStarted(seq)
 		began = true
 		self:_clearStarted()
 		self:_clearReady()
+		self:_clearLobbyVote()
 		task.spawn(self._play, self, seq)
 	end
 	self.startedConn = gameState.Replicator:GetStateChangedSignal("GameStarted"):Connect(start)
@@ -817,6 +980,7 @@ function Strategy:_play(seq)
 	if self.seq ~= seq or not self.running then
 		return
 	end
+	task.spawn(self._showHud, self, seq)
 	self.status = "Waiting for actions"
 	self:_bindClock()
 	local failed = false
@@ -826,6 +990,7 @@ function Strategy:_play(seq)
 		end
 		self.status = string.format("Running %s %d/%d", action.kind, index, #self.actions)
 		local ok, success, msg = pcall(self._run, self, action)
+		self:_refreshHud()
 		if not ok or success == false then
 			self.status = tostring(msg or success)
 			failed = true
@@ -880,7 +1045,9 @@ function Strategy:Stop()
 	self.running = false
 	self.status = "Stopped"
 	self:_clearRematch()
+	self:_clearHud()
 	self:_clearReady()
+	self:_clearLobbyVote()
 	self:_clearStarted()
 	self.rematching = false
 	self:_clearQueue()
