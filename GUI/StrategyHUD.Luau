@@ -118,6 +118,16 @@ local function readValue(player, names)
 	return 0
 end
 
+local function liveStats(gameState, meta)
+	local values = {}
+	local player = playerLib and playerLib.GetLocalPlayerRaw()
+	for _, stat in ipairs(PLAYER_STATS) do
+		values[stat.name] = formatNumber(readValue(player, stat.fields))
+	end
+	values.Map = tostring(gameState.MapName or meta.Map or "Unknown")
+	return values
+end
+
 local function track(connections, signal, callback)
 	local connection = signal:Connect(callback)
 	connections[#connections + 1] = connection
@@ -148,6 +158,10 @@ end
 
 function StrategyHUD.new(options)
 	local names, byId = towerData(options.strategy)
+	local stats = { Map = tostring(options.strategy.meta.Map or "Unknown") }
+	for _, stat in ipairs(PLAYER_STATS) do
+		stats[stat.name] = "0"
+	end
 	local self = setmetatable({
 		abort = options.abort,
 		alive = true,
@@ -156,6 +170,7 @@ function StrategyHUD.new(options)
 		freeCameraSpeed = 55,
 		gameState = options.gameState,
 		library = options.library,
+		liveStats = stats,
 		rowNames = {},
 		rowText = {},
 		rows = {},
@@ -312,6 +327,15 @@ end
 function StrategyHUD:_bind()
 	task.spawn(function()
 		while self.alive do
+			local ok, values = pcall(liveStats, self.gameState, self.strategy.meta)
+			if ok then
+				self.liveStats = values
+			end
+			task.wait(1)
+		end
+	end)
+	task.spawn(function()
+		while self.alive do
 			task.wait(1)
 			if self.alive then
 				self:Refresh()
@@ -394,11 +418,11 @@ function StrategyHUD:Refresh()
 		self:_setRow("tower:" .. name, formatNumber(counts[name] or 0))
 	end
 
-	local player = playerLib and playerLib.GetLocalPlayerRaw()
+	local stats = self.liveStats
 	for _, stat in ipairs(PLAYER_STATS) do
-		self:_setRow("stat:" .. stat.name, formatNumber(readValue(player, stat.fields)))
+		self:_setRow("stat:" .. stat.name, stats[stat.name] or "0")
 	end
-	self:_setRow("stat:Map", tostring(self.gameState.MapName or self.strategy.meta.Map or "Unknown"))
+	self:_setRow("stat:Map", stats.Map or tostring(self.strategy.meta.Map or "Unknown"))
 	self:_setRow("stat:Time Passed", formatTime(Workspace:GetServerTimeNow() - self.startedAt))
 end
 
