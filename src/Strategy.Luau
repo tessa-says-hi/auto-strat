@@ -1023,10 +1023,12 @@ function Strategy:_play(seq)
 		end
 		self.status = string.format("Running %s %d/%d", action.kind, index, #self.actions)
 		local ok, success, msg = pcall(self._run, self, action)
-		if not ok or success == false then
-			self.status = tostring(msg or success)
+		if not ok then
+			self.status = tostring(success)
 			failed = true
 			break
+		elseif success == false then
+			self.status = tostring(msg or success)
 		end
 	end
 	if self.seq == seq then
