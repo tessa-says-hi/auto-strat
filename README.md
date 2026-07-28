@@ -9,14 +9,12 @@ loadstring(game:HttpGet("https://raw.githubusercontent.com/tessa-says-hi/auto-st
 ## Runtime endpoints
 
 - `Main.Luau` is the stable Auto Gatlin entrypoint backed by FlowAuth.
-- `src/Strategy.Luau` is a thin public entrypoint for the protected Strategy Core
-  in the FlowAuth `Auto Strat Core` container.
-- `src/Recorder.Luau` remains the standalone recorder and tools entrypoint.
+- `src/Strategy.Luau` is the complete public strategy replay core.
+- `src/Recorder.Luau` is the public recorder and tools entrypoint.
 
-The protected Strategy Core is maintained locally under the ignored
-`protected/` directory and updated through its existing FlowAuth script ID.
-Updating that script preserves its loader URL, so recorded strategies do not
-need new endpoints for each release.
+Generated strategies and teleport resumes load the public Strategy source from
+the repository's `main` branch. Auto Stacker remains a separate FlowAuth-backed
+tool and is loaded on demand by Recorder.
 
 Load the standalone recorder and utility UI:
 

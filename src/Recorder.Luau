@@ -1069,7 +1069,7 @@ function Recorder:Export()
 	end
 
 	local lines = {
-		'local TDS = loadstring(game:HttpGet("https://flowauth.net/v1/loaders/76488a88ac55f3912ca42eba3fc8e1dc.lua", false))()',
+		'local TDS = loadstring(game:HttpGet("https://raw.githubusercontent.com/tessa-says-hi/auto-strat/refs/heads/main/src/Strategy.Luau", false))()',
 	}
 	local loadoutArgs = {}
 	for _, item in ipairs(self.meta.Loadout or {}) do
