@@ -558,20 +558,20 @@ function Strategy:_bindRematch(seq)
 			self.restartMatchConn = gameState.Replicator:GetStateChangedSignal("GameOver"):Connect(restarted)
 		end
 
-		self.status = won and "Queueing Play Again" or "Queueing Restart Match"
-		local ok, queued, err = pcall(self._queue, self)
-		if not ok or queued ~= true then
-			disconnect(self, "restartMatchConn")
-			self.status = tostring(err or queued or (won and "Could not queue Play Again" or "Could not queue Restart Match"))
-			self.rematching = false
-			return
+		if won then
+			self.status = "Queueing Play Again"
+			local ok, queued, err = pcall(self._queue, self)
+			if not ok or queued ~= true then
+				self.status = tostring(err or queued or "Could not queue Play Again")
+				self.rematching = false
+				return
+			end
 		end
 
 		if not won and not voted then
 			local voteSent, voteErr = pcall(restartVoting.InvokeServer, restartVoting, "Skip")
 			if not voteSent then
 				disconnect(self, "restartMatchConn")
-				self:_clearQueue()
 				self.status = "Restart Match vote failed: " .. tostring(voteErr)
 				self.rematching = false
 				return
@@ -582,7 +582,9 @@ function Strategy:_bindRematch(seq)
 		local sent, sendErr = pcall(gameManager.fireServer, gameManager, "Rematch")
 		if not sent then
 			disconnect(self, "restartMatchConn")
-			self:_clearQueue()
+			if won then
+				self:_clearQueue()
+			end
 			self.status = (won and "Play Again failed: " or "Restart Match failed: ") .. tostring(sendErr)
 			self.rematching = false
 			return
