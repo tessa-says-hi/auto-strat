@@ -16,16 +16,9 @@ local PLAYER_STATS = {
 	{ name = "Coins", fields = { "Coins", "Currency" } },
 	{ name = "Gems", fields = { "Gems" } },
 	{ name = "Triumphs", fields = { "Triumphs", "Wins" } },
-	{ name = "Losses", fields = { "Losses" } },
+	{ name = "Losses", fields = { "Loses", "Losses" } },
 	{ name = "Level", fields = { "Level", "Rank" } },
 }
-local playerLib
-do
-	local ok, value = pcall(require, ReplicatedStorage.Client.Modules.Replicators.PlayerReplicator)
-	if ok then
-		playerLib = value
-	end
-end
 
 local npcLib
 do
@@ -93,24 +86,13 @@ local function towerCounts(towers, byId)
 	return counts
 end
 
-local function readValue(player, names)
-	if not player then
+local function readValue(names)
+	if not lp then
 		return 0
 	end
 	for _, name in ipairs(names) do
-		local value = player[name]
-		if value == nil and type(player.Data) == "table" then
-			value = player.Data[name]
-		end
-		if value == nil and type(player.Stats) == "table" then
-			value = player.Stats[name]
-		end
-		if value == nil and player.Replicator then
-			value = player.Replicator:Get(name)
-		end
-		if type(value) == "table" then
-			value = value.Value or value.Amount
-		end
+		local object = lp:FindFirstChild(name)
+		local value = object and object.Value
 		if value ~= nil then
 			return value
 		end
@@ -120,9 +102,8 @@ end
 
 local function liveStats(gameState, meta)
 	local values = {}
-	local player = playerLib and playerLib.GetLocalPlayerRaw()
 	for _, stat in ipairs(PLAYER_STATS) do
-		values[stat.name] = formatNumber(readValue(player, stat.fields))
+		values[stat.name] = formatNumber(readValue(stat.fields))
 	end
 	values.Map = tostring(gameState.MapName or meta.Map or "Unknown")
 	return values
