@@ -143,23 +143,9 @@ function StrategyHUD.new(options)
 end
 
 function StrategyHUD:_row(window, key, name)
-	local label = self.library:Create("TextLabel", {
-		Name = name,
-		BackgroundColor3 = Color3.fromRGB(22, 22, 22),
-		BackgroundTransparency = 0,
-		BorderColor3 = Color3.fromRGB(32, 32, 32),
-		BorderSizePixel = 1,
-		Font = self.library.options.font,
-		LayoutOrder = window:GetOrder(),
-		Parent = window.container,
-		Size = UDim2.new(1, 0, 0, 20),
-		Text = name .. ": 0",
-		TextColor3 = self.library.options.textcolor,
-		TextSize = 14,
-		TextStrokeTransparency = 1,
-	})
+	local label = window:Section(name .. ": 0")
+	label.Name = name
 	self.rows[key] = label
-	window:Resize()
 end
 
 function StrategyHUD:_spacer(window)
@@ -174,32 +160,16 @@ function StrategyHUD:_spacer(window)
 end
 
 function StrategyHUD:_build()
-	local theme = {
-		bgcolor = Color3.fromRGB(30, 30, 30),
-		bordercolor = Color3.fromRGB(56, 56, 56),
-		btncolor = Color3.fromRGB(22, 22, 22),
-		font = Enum.Font.Code,
-		fontsize = 14,
-		strokecolor = Color3.new(),
-		textcolor = Color3.new(1, 1, 1),
-		textstroke = 1,
-		titlefont = Enum.Font.Code,
-		titlesize = 15,
-		titletextcolor = Color3.new(1, 1, 1),
-		titlestroke = 1,
-		titlestrokecolor = Color3.new(),
-		topcolor = Color3.fromRGB(25, 25, 25),
-		underlinecolor = Color3.fromRGB(65, 235, 92),
-	}
-
-	local stats = self.library:CreateWindow("Auto Strats", theme)
+	local stats = self.library:CreateWindow("Auto Strats", {})
 	for _, name in ipairs(self.towerNames) do
 		self:_row(stats, "tower:" .. name, name)
 	end
 	self:_spacer(stats)
-	for _, name in ipairs({ "Coins", "Gems", "Triumphs", "Losses", "Level", "Map", "Time Passed" }) do
+	for _, name in ipairs({ "Coins", "Gems", "Triumphs", "Losses", "Level", "Map" }) do
 		self:_row(stats, "stat:" .. name, name)
 	end
+	self:_spacer(stats)
+	self:_row(stats, "stat:Time Passed", "Time Passed")
 	stats:Button("Abort Strat", function()
 		if self.alive then
 			self.abort()
@@ -228,9 +198,9 @@ function StrategyHUD:_build()
 	local bannerHeight = 34
 	local banner = self.library:Create("Frame", {
 		Name = "Advertisement",
-		BackgroundColor3 = Color3.fromRGB(50, 39, 33),
+		BackgroundColor3 = Color3.fromRGB(65, 58, 48),
 		BackgroundTransparency = 0.18,
-		BorderColor3 = Color3.fromRGB(76, 58, 48),
+		BorderColor3 = Color3.fromRGB(88, 78, 64),
 		BorderSizePixel = 1,
 		ClipsDescendants = true,
 		Parent = screen,
@@ -239,7 +209,8 @@ function StrategyHUD:_build()
 		ZIndex = 20,
 	})
 	local message = "Auto Strats made by Money Maker, get script on Money Maker Development discord"
-	local textWidth = TextService:GetTextSize(message, 15, Enum.Font.GothamBold, Vector2.new(2000, bannerHeight)).X
+	local textWidth =
+		TextService:GetTextSize(message, 15, Enum.Font.SourceSansBold, Vector2.new(2000, bannerHeight)).X
 	local arrowWidth = 42
 	local gap = 7
 	-- centered with math because eyeballing it lasted several business days
@@ -261,7 +232,7 @@ function StrategyHUD:_build()
 		return self.library:Create("TextLabel", {
 			Name = name,
 			BackgroundTransparency = 1,
-			Font = Enum.Font.GothamBold,
+			Font = Enum.Font.SourceSansBold,
 			Parent = content,
 			Position = position,
 			Size = size,
@@ -317,58 +288,74 @@ function StrategyHUD:_build()
 end
 
 function StrategyHUD:_bind()
-	task.spawn(function()
-		while self.alive do
-			self:Refresh()
-			task.wait(1)
+	local elapsed = 0
+	self.connections[#self.connections + 1] = RunService.Heartbeat:Connect(function(delta)
+		if not self.alive then
+			return
 		end
+
+		elapsed = elapsed + delta
+		if elapsed < 1 then
+			return
+		end
+		elapsed = elapsed % 1
+		self:Refresh()
 	end)
 end
 
 function StrategyHUD:_animateBanner()
 	-- this banner has somehow had more revisions than the strategy runner
-	local cadence = 0.25
+	local blinkTime = 1
+	local dashTime = 0.3
+	local dashPause = 0.45
 	local loopPause = 0.75
-	local function setArrows(left, right, transparency)
-		if left then
-			self.leftArrow.Text = left
-			self.rightArrow.Text = right
-		end
-		if transparency ~= nil then
-			self.leftArrow.TextTransparency = transparency
-			self.rightArrow.TextTransparency = transparency
-		end
+	local frames = {
+		{ loopPause, "--->", "<---", 0 },
+	}
+	for _ = 1, 3 do
+		frames[#frames + 1] = { blinkTime, nil, nil, 1 }
+		frames[#frames + 1] = { blinkTime, nil, nil, 0 }
 	end
 
-	task.spawn(function()
-		while self.alive do
-			setArrows("--->", "<---", 0)
+	local dashCount = 3
+	for _ = 1, 3 do
+		for pass = 1, 2 do
+			local step = pass == 1 and -1 or 1
 			for _ = 1, 3 do
-				if not self.alive then
-					return
-				end
-				setArrows(nil, nil, 1)
-				task.wait(cadence)
-				if not self.alive then
-					return
-				end
-				setArrows(nil, nil, 0)
-				task.wait(cadence)
+				dashCount = dashCount + step
+				frames[#frames + 1] = {
+					dashTime,
+					string.rep("-", dashCount) .. ">",
+					"<" .. string.rep("-", dashCount),
+					0,
+				}
 			end
-			local dashCount = 3
-			for pass = 1, 6 do
-				local step = pass % 2 == 1 and -1 or 1
-				for _ = 1, 3 do
-					if not self.alive then
-						return
-					end
-					dashCount = dashCount + step
-					setArrows(string.rep("-", dashCount) .. ">", "<" .. string.rep("-", dashCount), 0)
-					task.wait(cadence)
-				end
-			end
-			setArrows("--->", "<---", 0)
-			task.wait(loopPause)
+		end
+		frames[#frames + 1] = { dashPause, "--->", "<---", 0 }
+	end
+
+	local frame = 1
+	local elapsed = 0
+	local function show(data)
+		if data[2] then
+			self.leftArrow.Text = data[2]
+			self.rightArrow.Text = data[3]
+		end
+		self.leftArrow.TextTransparency = data[4]
+		self.rightArrow.TextTransparency = data[4]
+	end
+
+	show(frames[frame])
+	self.connections[#self.connections + 1] = RunService.Heartbeat:Connect(function(delta)
+		if not self.alive then
+			return
+		end
+
+		elapsed = elapsed + delta
+		while elapsed >= frames[frame][1] do
+			elapsed = elapsed - frames[frame][1]
+			frame = (frame % #frames) + 1
+			show(frames[frame])
 		end
 	end)
 end

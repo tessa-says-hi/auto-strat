@@ -500,6 +500,7 @@ local defaults; do
             });
         
             self:Resize();
+            return check:FindFirstChild('section_lbl');
         end
 
         function types:Slider(name, options, callback)
@@ -994,7 +995,7 @@ local defaults; do
     function library:CreateWindow(name, options)
 		
         if (not library.container) then
-            library.container = self:Create("ScreenGui", {
+            local screen = self:Create("ScreenGui", {
                 self:Create('Frame', {
                     Name = 'Container';
                     Size = UDim2.new(1, -30, 1, 0);
@@ -1002,9 +1003,15 @@ local defaults; do
                     BackgroundTransparency = 1;
                     Active = false;
                 });
-                -- CoreGui complained so loudly it got evicted.
-                Parent = game:GetService("Players").LocalPlayer:WaitForChild("PlayerGui");
-            }):FindFirstChild('Container');
+            });
+            -- PlayerGui lost the custody battle to the chat window.
+            local topmost = pcall(function()
+                screen.Parent = game:GetService("CoreGui");
+            end);
+            if (not topmost) then
+                screen.Parent = game:GetService("Players").LocalPlayer:WaitForChild("PlayerGui");
+            end
+            library.container = screen:FindFirstChild('Container');
         end
         if (not library.options) then
 			library.options = setmetatable(options or {}, {__index = defaults})
