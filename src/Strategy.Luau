@@ -958,7 +958,7 @@ function Strategy:_run(action)
 	local troops = net.Channel("Troops")
 	if action.kind == "place" then
 		local model = troops:InvokeServer("Place", {
-			Position = action.position,
+			Position = action.position + Vector3.new(0, 50, 0),
 			Rotation = action.rotation,
 		}, action.name)
 		if typeof(model) == "Instance" then
