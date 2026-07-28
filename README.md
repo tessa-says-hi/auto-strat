@@ -6,6 +6,18 @@ Tower Defense Simulator tools with an in-game strategy recorder and replay core.
 loadstring(game:HttpGet("https://raw.githubusercontent.com/tessa-says-hi/auto-strat/main/Main.Luau", true))()
 ```
 
+## Runtime endpoints
+
+- `Main.Luau` is the stable Auto Gatlin entrypoint backed by FlowAuth.
+- `src/Strategy.Luau` is a thin public entrypoint for the protected Strategy Core
+  in the FlowAuth `Auto Strat Core` container.
+- `src/Recorder.Luau` remains the standalone recorder and tools entrypoint.
+
+The protected Strategy Core is maintained locally under the ignored
+`protected/` directory and updated through its existing FlowAuth script ID.
+Updating that script preserves its loader URL, so recorded strategies do not
+need new endpoints for each release.
+
 Load the standalone recorder and utility UI:
 
 ```lua
