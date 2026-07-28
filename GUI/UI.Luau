@@ -1002,7 +1002,7 @@ local defaults; do
                     BackgroundTransparency = 1;
                     Active = false;
                 });
-                Parent = game:GetService("CoreGui");
+                Parent = game:GetService("Players").LocalPlayer:WaitForChild("PlayerGui");
             }):FindFirstChild('Container');
         end
         if (not library.options) then

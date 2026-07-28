@@ -1,22 +1,6 @@
 local clone = cloneref or function(value)
 	return value
 end
-local getIdentity = getthreadidentity or getidentity or getthreadcontext or get_thread_identity
-local setIdentity = setthreadidentity or setidentity or setthreadcontext or set_thread_identity
-
-local function elevate()
-	local identity = getIdentity and getIdentity()
-	if setIdentity then
-		setIdentity(8)
-	end
-	return identity
-end
-
-local function restore(identity)
-	if setIdentity and identity then
-		setIdentity(identity)
-	end
-end
 
 local Players = clone(game:GetService("Players"))
 local ReplicatedStorage = clone(game:GetService("ReplicatedStorage"))
@@ -333,7 +317,6 @@ end
 
 function StrategyHUD:_animateBanner()
 	local function setArrows(left, right, transparency)
-		local identity = elevate()
 		if left then
 			self.leftArrow.Text = left
 			self.rightArrow.Text = right
@@ -342,7 +325,6 @@ function StrategyHUD:_animateBanner()
 			self.leftArrow.TextTransparency = transparency
 			self.rightArrow.TextTransparency = transparency
 		end
-		restore(identity)
 	end
 
 	task.spawn(function()
@@ -388,7 +370,6 @@ function StrategyHUD:Refresh()
 	if not self.alive then
 		return
 	end
-	local identity = elevate()
 
 	local counts = towerCounts(self.strategy)
 	for _, name in ipairs(self.towerNames) do
@@ -403,7 +384,6 @@ function StrategyHUD:Refresh()
 	self:_setRow("stat:Level", "Level", formatNumber(readValue(player, { "Level", "Rank" })))
 	self:_setRow("stat:Map", "Map", tostring(self.gameState.MapName or self.strategy.meta.Map or "Unknown"))
 	self:_setRow("stat:Time Passed", "Time Passed", formatTime(Workspace:GetServerTimeNow() - self.startedAt))
-	restore(identity)
 end
 
 function StrategyHUD:_clearCamera()
