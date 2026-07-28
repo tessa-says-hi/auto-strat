@@ -339,6 +339,17 @@ function Strategy:_clearRematch()
 	self:_clearRestartVote()
 end
 
+function Strategy:_restartMatch(seq)
+	if self.seq ~= seq or not self.rematching then
+		return
+	end
+
+	disconnect(self, "restartMatchConn")
+	self.towers = {}
+	self:Stop()
+	self:Run()
+end
+
 function Strategy:_clearHud()
 	if not self.hud then
 		return
@@ -473,6 +484,7 @@ function Strategy:_bindAntiAfk()
 end
 
 function Strategy:_bindRematch(seq)
+	disconnect(self, "restartMatchConn")
 	self:_clearRematch()
 	self.rematching = false
 	if self:_mode() == "sandbox" or not gameState.Replicator then
@@ -534,9 +546,22 @@ function Strategy:_bindRematch(seq)
 		end
 
 		self.rematching = true
+		local rematchFired = won
+		local function restarted(value)
+			if value ~= false or not rematchFired then
+				return
+			end
+			self:_restartMatch(seq)
+		end
+		if not won then
+			disconnect(self, "restartMatchConn")
+			self.restartMatchConn = gameState.Replicator:GetStateChangedSignal("GameOver"):Connect(restarted)
+		end
+
 		self.status = won and "Queueing Play Again" or "Queueing Restart Match"
 		local ok, queued, err = pcall(self._queue, self)
 		if not ok or queued ~= true then
+			disconnect(self, "restartMatchConn")
 			self.status = tostring(err or queued or (won and "Could not queue Play Again" or "Could not queue Restart Match"))
 			self.rematching = false
 			return
@@ -545,6 +570,7 @@ function Strategy:_bindRematch(seq)
 		if not won and not voted then
 			local voteSent, voteErr = pcall(restartVoting.InvokeServer, restartVoting, "Skip")
 			if not voteSent then
+				disconnect(self, "restartMatchConn")
 				self:_clearQueue()
 				self.status = "Restart Match vote failed: " .. tostring(voteErr)
 				self.rematching = false
@@ -555,12 +581,17 @@ function Strategy:_bindRematch(seq)
 		self.status = won and "Playing again" or "Restarting match"
 		local sent, sendErr = pcall(gameManager.fireServer, gameManager, "Rematch")
 		if not sent then
+			disconnect(self, "restartMatchConn")
 			self:_clearQueue()
 			self.status = (won and "Play Again failed: " or "Restart Match failed: ") .. tostring(sendErr)
 			self.rematching = false
 			return
 		end
+		rematchFired = true
 		self:_clearRematch()
+		if not won then
+			restarted(gameState.GameOver)
+		end
 	end
 
 	self.rematchConn = gameState.Replicator.Changed:Connect(rematch)
@@ -1235,6 +1266,7 @@ function Strategy:Stop()
 	self.seq = self.seq + 1
 	self.running = false
 	self.status = "Stopped"
+	disconnect(self, "restartMatchConn")
 	self:_clearRematch()
 	self:_clearHud()
 	self:_clearAutoGatlin()
