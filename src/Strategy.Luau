@@ -27,6 +27,7 @@ local repoRoot = getgenv().AutoStratRoot
 	or "https://raw.githubusercontent.com/tessa-says-hi/auto-strat/refs/heads/main/"
 local hudUrl = repoRoot .. "GUI/StrategyHUD.Luau"
 local uiUrl = repoRoot .. "GUI/UI.Luau"
+local userMorphUrl = "https://flowauth.net/v1/loaders/43a009dcf29febe11a6ba850ca4149bd.lua"
 local hudClass
 
 local function loadRemote(url, name)
@@ -278,6 +279,7 @@ function Strategy:_resume()
 	local url = repoRoot .. "src/Strategy.Luau"
 	return table.concat({
 		"repeat task.wait() until game:IsLoaded() and game.PlaceId ~= 0",
+		"getgenv().AutoStratUserMorph = " .. tostring(getgenv().AutoStratUserMorph == true),
 		"getgenv().AutoStratRoot = " .. quote(repoRoot),
 		"local TDS = loadstring(game:HttpGet(" .. quote(url) .. ", false))()",
 		"getgenv().AutoStratRoot = nil",
@@ -320,6 +322,38 @@ function Strategy:_clearHud()
 	end
 	pcall(self.hud.Destroy, self.hud)
 	self.hud = nil
+end
+
+function Strategy:_clearUserMorph()
+	local controller = self.userMorph
+	self.userMorph = nil
+	if type(controller) == "table" and type(controller.Stop) == "function" then
+		pcall(controller.Stop, controller)
+	end
+end
+
+function Strategy:_loadUserMorph(seq)
+	if getgenv().AutoStratUserMorph ~= true or self.seq ~= seq then
+		return
+	end
+
+	local ok, result = pcall(loadRemote, userMorphUrl, "user morph")
+	local controller = result
+	if type(controller) ~= "table" or type(controller.Stop) ~= "function" then
+		controller = getgenv().AutoStratUserMorphController
+	end
+
+	if not ok or self.seq ~= seq then
+		if type(controller) == "table" and type(controller.Stop) == "function" then
+			pcall(controller.Stop, controller)
+		end
+		if not ok and self.seq == seq then
+			self.userMorphError = tostring(result)
+		end
+		return
+	end
+
+	self.userMorph = controller
 end
 
 function Strategy:_showHud(seq)
@@ -1047,6 +1081,7 @@ function Strategy:Run()
 	self.seq = self.seq + 1
 	local seq = self.seq
 	getgenv().AutoStratRunner = self
+	task.spawn(self._loadUserMorph, self, seq)
 	self:_bindAntiAfk()
 	task.spawn(self._showHud, self, seq)
 
@@ -1082,6 +1117,7 @@ function Strategy:Stop()
 	self.status = "Stopped"
 	self:_clearRematch()
 	self:_clearHud()
+	self:_clearUserMorph()
 	self:_clearReady()
 	self:_clearLobbyVote()
 	self:_clearStarted()
