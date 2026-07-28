@@ -316,6 +316,7 @@ function StrategyHUD:_bind()
 end
 
 function StrategyHUD:_animateBanner()
+	local cadence = 0.25
 	local function setArrows(left, right, transparency)
 		if left then
 			self.leftArrow.Text = left
@@ -335,12 +336,12 @@ function StrategyHUD:_animateBanner()
 					return
 				end
 				setArrows(nil, nil, 1)
-				task.wait(0.18)
+				task.wait(cadence)
 				if not self.alive then
 					return
 				end
 				setArrows(nil, nil, 0)
-				task.wait(0.18)
+				task.wait(cadence)
 			end
 			local dashCount = 3
 			for pass = 1, 6 do
@@ -351,7 +352,7 @@ function StrategyHUD:_animateBanner()
 					end
 					dashCount = dashCount + step
 					setArrows(string.rep("-", dashCount) .. ">", "<" .. string.rep("-", dashCount), 0)
-					task.wait(0.11)
+					task.wait(cadence)
 				end
 			end
 			setArrows("--->", "<---", 0)
