@@ -1048,6 +1048,7 @@ function Strategy:Run()
 	local seq = self.seq
 	getgenv().AutoStratRunner = self
 	self:_bindAntiAfk()
+	task.spawn(self._showHud, self, seq)
 
 	if game.PlaceId == lobbyId then
 		self.status = "Preparing matchmaking"
@@ -1061,7 +1062,6 @@ function Strategy:Run()
 		return self
 	end
 
-	task.spawn(self._showHud, self, seq)
 	self:_bindRematch(seq)
 	task.spawn(function()
 		local ready, readyErr = self:_prepare(seq)
