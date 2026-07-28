@@ -1002,6 +1002,7 @@ local defaults; do
                     BackgroundTransparency = 1;
                     Active = false;
                 });
+                -- CoreGui complained so loudly it got evicted.
                 Parent = game:GetService("Players").LocalPlayer:WaitForChild("PlayerGui");
             }):FindFirstChild('Container');
         end

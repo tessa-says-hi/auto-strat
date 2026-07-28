@@ -145,7 +145,10 @@ end
 function StrategyHUD:_row(window, key, name)
 	local label = self.library:Create("TextLabel", {
 		Name = name,
-		BackgroundTransparency = 1,
+		BackgroundColor3 = Color3.fromRGB(22, 22, 22),
+		BackgroundTransparency = 0,
+		BorderColor3 = Color3.fromRGB(32, 32, 32),
+		BorderSizePixel = 1,
 		Font = self.library.options.font,
 		LayoutOrder = window:GetOrder(),
 		Parent = window.container,
@@ -217,11 +220,12 @@ function StrategyHUD:_build()
 	local container = self.library.container
 	local screen = container.Parent
 	screen.Name = "AutoStratUI"
-	screen.DisplayOrder = 1000000
+	screen.DisplayOrder = 2147483647
 	screen.IgnoreGuiInset = true
 	screen.ResetOnSpawn = false
 	screen.ZIndexBehavior = Enum.ZIndexBehavior.Global
 
+	local bannerHeight = 34
 	local banner = self.library:Create("Frame", {
 		Name = "Advertisement",
 		BackgroundColor3 = Color3.fromRGB(50, 39, 33),
@@ -231,13 +235,14 @@ function StrategyHUD:_build()
 		ClipsDescendants = true,
 		Parent = screen,
 		Position = UDim2.fromOffset(0, 0),
-		Size = UDim2.new(1, 0, 0, 30),
+		Size = UDim2.new(1, 0, 0, bannerHeight),
 		ZIndex = 20,
 	})
 	local message = "Auto Strats made by Money Maker, get script on Money Maker Development discord"
-	local textWidth = TextService:GetTextSize(message, 15, Enum.Font.GothamBold, Vector2.new(2000, 30)).X
+	local textWidth = TextService:GetTextSize(message, 15, Enum.Font.GothamBold, Vector2.new(2000, bannerHeight)).X
 	local arrowWidth = 42
 	local gap = 7
+	-- centered with math because eyeballing it lasted several business days
 	local contentWidth = textWidth + (arrowWidth * 2) + (gap * 2)
 	local content = self.library:Create("Frame", {
 		Name = "Content",
@@ -245,7 +250,7 @@ function StrategyHUD:_build()
 		BackgroundTransparency = 1,
 		Parent = banner,
 		Position = UDim2.fromScale(0.5, 0),
-		Size = UDim2.fromOffset(contentWidth, 30),
+		Size = UDim2.fromOffset(contentWidth, bannerHeight),
 		ZIndex = 21,
 	})
 	local scale = self.library:Create("UIScale", {
@@ -274,15 +279,20 @@ function StrategyHUD:_build()
 		"LeftArrow",
 		"--->",
 		UDim2.fromOffset(0, 0),
-		UDim2.fromOffset(arrowWidth, 30),
+		UDim2.fromOffset(arrowWidth, bannerHeight),
 		Enum.TextXAlignment.Right
 	)
-	textLabel("Message", message, UDim2.fromOffset(arrowWidth + gap, 0), UDim2.fromOffset(textWidth, 30))
+	textLabel(
+		"Message",
+		message,
+		UDim2.fromOffset(arrowWidth + gap, 0),
+		UDim2.fromOffset(textWidth, bannerHeight)
+	)
 	self.rightArrow = textLabel(
 		"RightArrow",
 		"<---",
 		UDim2.fromOffset(arrowWidth + gap + textWidth + gap, 0),
-		UDim2.fromOffset(arrowWidth, 30),
+		UDim2.fromOffset(arrowWidth, bannerHeight),
 		Enum.TextXAlignment.Left
 	)
 	self.banner = banner
@@ -291,9 +301,9 @@ function StrategyHUD:_build()
 		if not self.alive or not banner.Parent then
 			return
 		end
-		container.Position = UDim2.fromOffset(-8, 38)
+		container.Position = UDim2.fromOffset(-8, bannerHeight + 8)
 		banner.Position = UDim2.fromOffset(0, 0)
-		banner.Size = UDim2.new(1, 0, 0, 30)
+		banner.Size = UDim2.new(1, 0, 0, bannerHeight)
 		scale.Scale = math.min(1, math.max((banner.AbsoluteSize.X - 16) / contentWidth, 0.55))
 	end
 	self.connections[#self.connections + 1] = container:GetPropertyChangedSignal("AbsoluteSize"):Connect(layout)
@@ -316,7 +326,9 @@ function StrategyHUD:_bind()
 end
 
 function StrategyHUD:_animateBanner()
+	-- this banner has somehow had more revisions than the strategy runner
 	local cadence = 0.25
+	local loopPause = 0.75
 	local function setArrows(left, right, transparency)
 		if left then
 			self.leftArrow.Text = left
@@ -356,6 +368,7 @@ function StrategyHUD:_animateBanner()
 				end
 			end
 			setArrows("--->", "<---", 0)
+			task.wait(loopPause)
 		end
 	end)
 end
