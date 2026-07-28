@@ -10,11 +10,30 @@ local UIS = clone(game:GetService("UserInputService"))
 local Workspace = clone(game:GetService("Workspace"))
 
 local lp = clone(Players.LocalPlayer)
+local BANNER_FONT = Enum.Font.GothamBold
+local BANNER_TEXT_SIZE = 15
+local PLAYER_STATS = {
+	{ name = "Coins", fields = { "Coins", "Currency" } },
+	{ name = "Gems", fields = { "Gems" } },
+	{ name = "Triumphs", fields = { "Triumphs", "Wins" } },
+	{ name = "Losses", fields = { "Losses" } },
+	{ name = "Level", fields = { "Level", "Rank" } },
+}
 local playerLib
 do
 	local ok, value = pcall(require, ReplicatedStorage.Client.Modules.Replicators.PlayerReplicator)
 	if ok then
 		playerLib = value
+	end
+end
+
+local npcLib
+do
+	local ok, value = pcall(function()
+		return require(ReplicatedStorage.Client.Modules.Replicators.NPCReplicator)
+	end)
+	if ok then
+		npcLib = value
 	end
 end
 
@@ -37,8 +56,9 @@ local function formatTime(value)
 	return string.format("%02d:%02d", math.floor(total / 60), total % 60)
 end
 
-local function towerNames(strategy)
+local function towerData(strategy)
 	local names = {}
+	local byId = {}
 	local seen = {}
 	local function add(value)
 		local name = type(value) == "table" and value.Name or value
@@ -54,21 +74,15 @@ local function towerNames(strategy)
 	for _, action in ipairs(strategy.actions) do
 		if action.kind == "place" then
 			add(action.name)
-		end
-	end
-	return names
-end
-
-local function towerCounts(strategy)
-	local byId = {}
-	for _, action in ipairs(strategy.actions) do
-		if action.kind == "place" then
 			byId[action.id] = action.name
 		end
 	end
+	return names, byId
+end
 
+local function towerCounts(towers, byId)
 	local counts = {}
-	for id, model in pairs(strategy.towers) do
+	for id, model in pairs(towers) do
 		if model and model.Parent then
 			local name = byId[id]
 			if name then
@@ -104,6 +118,18 @@ local function readValue(player, names)
 	return 0
 end
 
+local function track(connections, signal, callback)
+	local connection = signal:Connect(callback)
+	connections[#connections + 1] = connection
+end
+
+local function disconnectAll(connections)
+	for _, connection in ipairs(connections) do
+		connection:Disconnect()
+	end
+	table.clear(connections)
+end
+
 local function resetLibrary(library)
 	local container = library.container
 	local screen = container and container:FindFirstAncestorOfClass("ScreenGui")
@@ -121,17 +147,22 @@ local function resetLibrary(library)
 end
 
 function StrategyHUD.new(options)
+	local names, byId = towerData(options.strategy)
 	local self = setmetatable({
 		abort = options.abort,
 		alive = true,
 		cameraConnections = {},
 		connections = {},
+		freeCameraSpeed = 55,
 		gameState = options.gameState,
 		library = options.library,
+		rowNames = {},
+		rowText = {},
 		rows = {},
 		startedAt = Workspace:GetServerTimeNow(),
 		strategy = options.strategy,
-		towerNames = towerNames(options.strategy),
+		towerNameById = byId,
+		towerNames = names,
 	}, StrategyHUD)
 
 	resetLibrary(self.library)
@@ -145,18 +176,8 @@ end
 function StrategyHUD:_row(window, key, name)
 	local label = window:Section(name .. ": 0")
 	label.Name = name
+	self.rowNames[key] = name
 	self.rows[key] = label
-end
-
-function StrategyHUD:_spacer(window)
-	self.library:Create("Frame", {
-		Name = "Spacer",
-		BackgroundTransparency = 1,
-		LayoutOrder = window:GetOrder(),
-		Parent = window.container,
-		Size = UDim2.new(1, 0, 0, 4),
-	})
-	window:Resize()
 end
 
 function StrategyHUD:_build()
@@ -164,12 +185,14 @@ function StrategyHUD:_build()
 	for _, name in ipairs(self.towerNames) do
 		self:_row(stats, "tower:" .. name, name)
 	end
-	self:_spacer(stats)
-	for _, name in ipairs({ "Coins", "Gems", "Triumphs", "Losses", "Level", "Map" }) do
-		self:_row(stats, "stat:" .. name, name)
+	stats:Section("")
+	for _, stat in ipairs(PLAYER_STATS) do
+		self:_row(stats, "stat:" .. stat.name, stat.name)
 	end
-	self:_spacer(stats)
+	self:_row(stats, "stat:Map", "Map")
+	stats:Section("")
 	self:_row(stats, "stat:Time Passed", "Time Passed")
+	stats:Section("")
 	stats:Button("Abort Strat", function()
 		if self.alive then
 			self.abort()
@@ -209,8 +232,7 @@ function StrategyHUD:_build()
 		ZIndex = 20,
 	})
 	local message = "Auto Strats made by Money Maker, get script on Money Maker Development discord"
-	local textWidth =
-		TextService:GetTextSize(message, 15, Enum.Font.SourceSansBold, Vector2.new(2000, bannerHeight)).X
+	local textWidth = TextService:GetTextSize(message, BANNER_TEXT_SIZE, BANNER_FONT, Vector2.new(2000, bannerHeight)).X
 	local arrowWidth = 42
 	local gap = 7
 	-- centered with math because eyeballing it lasted several business days
@@ -232,13 +254,13 @@ function StrategyHUD:_build()
 		return self.library:Create("TextLabel", {
 			Name = name,
 			BackgroundTransparency = 1,
-			Font = Enum.Font.SourceSansBold,
+			Font = BANNER_FONT,
 			Parent = content,
 			Position = position,
 			Size = size,
 			Text = text,
 			TextColor3 = Color3.new(1, 1, 1),
-			TextSize = 15,
+			TextSize = BANNER_TEXT_SIZE,
 			TextStrokeTransparency = 1,
 			TextXAlignment = alignment or Enum.TextXAlignment.Center,
 			TextYAlignment = Enum.TextYAlignment.Center,
@@ -277,8 +299,8 @@ function StrategyHUD:_build()
 		banner.Size = UDim2.new(1, 0, 0, bannerHeight)
 		scale.Scale = math.min(1, math.max((banner.AbsoluteSize.X - 16) / contentWidth, 0.55))
 	end
-	self.connections[#self.connections + 1] = container:GetPropertyChangedSignal("AbsoluteSize"):Connect(layout)
-	self.connections[#self.connections + 1] = banner:GetPropertyChangedSignal("AbsoluteSize"):Connect(layout)
+	track(self.connections, container:GetPropertyChangedSignal("AbsoluteSize"), layout)
+	track(self.connections, banner:GetPropertyChangedSignal("AbsoluteSize"), layout)
 	layout()
 
 	self.library.queue[#self.library.queue + 1] = {
@@ -288,18 +310,13 @@ function StrategyHUD:_build()
 end
 
 function StrategyHUD:_bind()
-	local elapsed = 0
-	self.connections[#self.connections + 1] = RunService.Heartbeat:Connect(function(delta)
-		if not self.alive then
-			return
+	task.spawn(function()
+		while self.alive do
+			task.wait(1)
+			if self.alive then
+				self:Refresh()
+			end
 		end
-
-		elapsed = elapsed + delta
-		if elapsed < 1 then
-			return
-		end
-		elapsed = elapsed % 1
-		self:Refresh()
 	end)
 end
 
@@ -334,8 +351,6 @@ function StrategyHUD:_animateBanner()
 		frames[#frames + 1] = { dashPause, "--->", "<---", 0 }
 	end
 
-	local frame = 1
-	local elapsed = 0
 	local function show(data)
 		if data[2] then
 			self.leftArrow.Text = data[2]
@@ -345,25 +360,27 @@ function StrategyHUD:_animateBanner()
 		self.rightArrow.TextTransparency = data[4]
 	end
 
-	show(frames[frame])
-	self.connections[#self.connections + 1] = RunService.Heartbeat:Connect(function(delta)
-		if not self.alive then
-			return
-		end
-
-		elapsed = elapsed + delta
-		while elapsed >= frames[frame][1] do
-			elapsed = elapsed - frames[frame][1]
+	task.spawn(function()
+		local frame = 1
+		while self.alive do
+			local data = frames[frame]
+			show(data)
+			task.wait(data[1])
 			frame = (frame % #frames) + 1
-			show(frames[frame])
 		end
 	end)
 end
 
-function StrategyHUD:_setRow(key, name, value)
+function StrategyHUD:_setRow(key, value)
 	local row = self.rows[key]
-	if row then
-		row.Text = string.format("%s: %s", name, tostring(value))
+	if not row then
+		return
+	end
+
+	local text = string.format("%s: %s", self.rowNames[key], tostring(value))
+	if self.rowText[key] ~= text then
+		row.Text = text
+		self.rowText[key] = text
 	end
 end
 
@@ -372,100 +389,186 @@ function StrategyHUD:Refresh()
 		return
 	end
 
-	local counts = towerCounts(self.strategy)
+	local counts = towerCounts(self.strategy.towers, self.towerNameById)
 	for _, name in ipairs(self.towerNames) do
-		self:_setRow("tower:" .. name, name, formatNumber(counts[name] or 0))
+		self:_setRow("tower:" .. name, formatNumber(counts[name] or 0))
 	end
 
 	local player = playerLib and playerLib.GetLocalPlayerRaw()
-	self:_setRow("stat:Coins", "Coins", formatNumber(readValue(player, { "Coins", "Currency" })))
-	self:_setRow("stat:Gems", "Gems", formatNumber(readValue(player, { "Gems" })))
-	self:_setRow("stat:Triumphs", "Triumphs", formatNumber(readValue(player, { "Triumphs", "Wins" })))
-	self:_setRow("stat:Losses", "Losses", formatNumber(readValue(player, { "Losses" })))
-	self:_setRow("stat:Level", "Level", formatNumber(readValue(player, { "Level", "Rank" })))
-	self:_setRow("stat:Map", "Map", tostring(self.gameState.MapName or self.strategy.meta.Map or "Unknown"))
-	self:_setRow("stat:Time Passed", "Time Passed", formatTime(Workspace:GetServerTimeNow() - self.startedAt))
+	for _, stat in ipairs(PLAYER_STATS) do
+		self:_setRow("stat:" .. stat.name, formatNumber(readValue(player, stat.fields)))
+	end
+	self:_setRow("stat:Map", tostring(self.gameState.MapName or self.strategy.meta.Map or "Unknown"))
+	self:_setRow("stat:Time Passed", formatTime(Workspace:GetServerTimeNow() - self.startedAt))
+end
+
+function StrategyHUD:_captureCameraState()
+	if self.cameraState then
+		return
+	end
+
+	local camera = Workspace.CurrentCamera
+	if not camera then
+		return
+	end
+
+	self.cameraState = {
+		fieldOfView = camera.FieldOfView,
+		mouseBehavior = UIS.MouseBehavior,
+		mouseIconEnabled = UIS.MouseIconEnabled,
+	}
 end
 
 function StrategyHUD:_clearCamera()
-	for _, connection in ipairs(self.cameraConnections) do
-		connection:Disconnect()
-	end
-	table.clear(self.cameraConnections)
-	UIS.MouseBehavior = Enum.MouseBehavior.Default
+	disconnectAll(self.cameraConnections)
+
+	local state = self.cameraState
+	UIS.MouseBehavior = state and state.mouseBehavior or Enum.MouseBehavior.Default
+	UIS.MouseIconEnabled = state == nil or state.mouseIconEnabled
 end
 
 function StrategyHUD:_normalCamera()
+	self:_captureCameraState()
 	self:_clearCamera()
 	self.cameraTouched = true
 	local camera = Workspace.CurrentCamera
 	if not camera then
 		return
 	end
-	local char = lp.Character
-	camera.CameraType = Enum.CameraType.Custom
-	camera.CameraSubject = char and (char:FindFirstChildOfClass("Humanoid") or char:FindFirstChild("HumanoidRootPart"))
+
+	if self.cameraState then
+		camera.FieldOfView = self.cameraState.fieldOfView
+	end
+
+	local function useCharacter(character)
+		local subject = character
+			and (character:FindFirstChildOfClass("Humanoid") or character:FindFirstChild("HumanoidRootPart"))
+		if not subject then
+			return false
+		end
+		camera.CameraSubject = subject
+		camera.CameraType = Enum.CameraType.Custom
+		return true
+	end
+
+	if not useCharacter(lp.Character) then
+		camera.CameraType = Enum.CameraType.Custom
+		if self.alive then
+			track(self.cameraConnections, lp.CharacterAdded, function(character)
+				if useCharacter(character) then
+					self:_clearCamera()
+				end
+			end)
+		end
+	end
 end
 
 function StrategyHUD:_enemyFolder()
 	return Workspace:FindFirstChild("NPCs") or Workspace:FindFirstChild("Enemies")
 end
 
-function StrategyHUD:_enemySubject()
-	local folder = self:_enemyFolder()
-	if not folder then
+function StrategyHUD:_enemyInfo(model)
+	if not model:IsA("Model") or not model:FindFirstChild("RootPointer") then
 		return nil
 	end
+
+	local npc
+	if npcLib and npcLib.GetNPCFromModel then
+		local ok, value = pcall(npcLib.GetNPCFromModel, model)
+		if ok then
+			npc = value
+		end
+	end
+
+	if npc then
+		if npc.Type == "Units" or (tonumber(npc.Health) or 0) <= 0 then
+			return nil
+		end
+	end
+
+	local part = (npc and (npc.PrimaryPart or npc.HumanoidRootPart))
+		or model.PrimaryPart
+		or model:FindFirstChild("HumanoidRootPart")
+		or model:FindFirstChildWhichIsA("BasePart", true)
+	if not part or not part.Parent then
+		return nil
+	end
+
+	return part, tonumber(npc and npc.PathDistance) or tonumber(model:GetAttribute("PathDistance")) or 0
+end
+
+function StrategyHUD:_leadingEnemy(current)
+	local folder = self:_enemyFolder()
+	if not folder then
+		return nil, nil
+	end
+
+	local bestPart
+	local bestModel
+	local bestScore = -math.huge
 	for _, model in ipairs(folder:GetChildren()) do
-		if model:IsA("Model") then
-			local hum = model:FindFirstChildOfClass("Humanoid")
-			if not hum or hum.Health > 0 then
-				return hum
-					or model.PrimaryPart
-					or model:FindFirstChild("HumanoidRootPart")
-					or model:FindFirstChildWhichIsA("BasePart", true)
+		local part, score = self:_enemyInfo(model)
+		if part then
+			-- A tiny tie-break keeps the camera from changing targets just because two enemies share a path marker.
+			local stableScore = score + (model == current and 0.001 or 0)
+			if stableScore > bestScore then
+				bestPart = part
+				bestModel = model
+				bestScore = stableScore
 			end
 		end
 	end
+	return bestPart, bestModel
 end
 
 function StrategyHUD:_followEnemies()
+	self:_captureCameraState()
 	self:_clearCamera()
 	self.cameraTouched = true
 	local camera = Workspace.CurrentCamera
 	if not camera then
 		return
 	end
-	camera.CameraType = Enum.CameraType.Custom
 
-	local function update()
+	camera.CameraType = Enum.CameraType.Scriptable
+	local targetPart
+	local targetModel
+	local rescanAt = 0
+
+	track(self.cameraConnections, RunService.RenderStepped, function(delta)
 		if not self.alive then
 			return
 		end
-		local subject = self:_enemySubject()
-		if subject then
-			camera.CameraSubject = subject
+
+		rescanAt = rescanAt - delta
+		if rescanAt <= 0 or not targetPart or not targetPart.Parent then
+			targetPart, targetModel = self:_leadingEnemy(targetModel)
+			rescanAt = 0.2
 		end
-	end
-	local folder = self:_enemyFolder()
-	if folder then
-		self.cameraConnections[#self.cameraConnections + 1] = folder.ChildAdded:Connect(function()
-			task.defer(update)
-		end)
-		self.cameraConnections[#self.cameraConnections + 1] = folder.ChildRemoved:Connect(function()
-			task.defer(update)
-		end)
-	else
-		self.cameraConnections[#self.cameraConnections + 1] = Workspace.ChildAdded:Connect(function(child)
-			if child.Name == "NPCs" or child.Name == "Enemies" then
-				self:_followEnemies()
-			end
-		end)
-	end
-	update()
+		if not targetPart or not targetModel or not targetModel.Parent then
+			return
+		end
+
+		local size = targetModel:GetExtentsSize()
+		local distance = math.clamp(size.Magnitude * 1.4, 14, 34)
+		local height = math.clamp(size.Y * 0.85, 7, 18)
+		local focus = targetPart.Position + Vector3.new(0, math.clamp(size.Y * 0.25, 1.5, 6), 0)
+		local forward = Vector3.new(targetPart.CFrame.LookVector.X, 0, targetPart.CFrame.LookVector.Z)
+		if forward.Magnitude < 0.01 then
+			forward = Vector3.new(camera.CFrame.LookVector.X, 0, camera.CFrame.LookVector.Z)
+		end
+		forward = forward.Magnitude > 0 and forward.Unit or Vector3.new(0, 0, -1)
+
+		local desiredPosition = focus - forward * distance + Vector3.new(0, height, 0)
+		local desired = CFrame.lookAt(desiredPosition, focus)
+		local alpha = 1 - math.exp(-8 * math.min(delta, 0.1))
+		camera.CFrame = camera.CFrame:Lerp(desired, alpha)
+		camera.Focus = CFrame.new(focus)
+	end)
 end
 
 function StrategyHUD:_freeCamera()
+	self:_captureCameraState()
 	self:_clearCamera()
 	self.cameraTouched = true
 	local camera = Workspace.CurrentCamera
@@ -475,46 +578,87 @@ function StrategyHUD:_freeCamera()
 
 	camera.CameraType = Enum.CameraType.Scriptable
 	local position = camera.CFrame.Position
-	local pitch, yaw = camera.CFrame:ToOrientation()
+	local look = camera.CFrame.LookVector
+	local pitch = math.asin(math.clamp(look.Y, -1, 1))
+	local yaw = math.atan2(-look.X, -look.Z)
+	local targetPitch = pitch
+	local targetYaw = yaw
+	local velocity = Vector3.new()
 	local held = {}
 	local turning = false
+	local speed = self.freeCameraSpeed
 
-	self.cameraConnections[#self.cameraConnections + 1] = UIS.InputBegan:Connect(function(input, processed)
-		if processed then
-			return
-		end
+	local function stopTurning()
+		turning = false
+		local state = self.cameraState
+		UIS.MouseBehavior = state and state.mouseBehavior or Enum.MouseBehavior.Default
+		UIS.MouseIconEnabled = state == nil or state.mouseIconEnabled
+	end
+
+	track(self.cameraConnections, UIS.InputBegan, function(input, processed)
 		if input.UserInputType == Enum.UserInputType.MouseButton2 then
 			turning = true
 			UIS.MouseBehavior = Enum.MouseBehavior.LockCurrentPosition
-		else
+			UIS.MouseIconEnabled = false
+			return
+		end
+		if not processed and input.UserInputType == Enum.UserInputType.Keyboard and not UIS:GetFocusedTextBox() then
 			held[input.KeyCode] = true
 		end
 	end)
-	self.cameraConnections[#self.cameraConnections + 1] = UIS.InputEnded:Connect(function(input)
+	track(self.cameraConnections, UIS.InputEnded, function(input)
 		if input.UserInputType == Enum.UserInputType.MouseButton2 then
-			turning = false
-			UIS.MouseBehavior = Enum.MouseBehavior.Default
-		else
+			stopTurning()
+		elseif input.UserInputType == Enum.UserInputType.Keyboard then
 			held[input.KeyCode] = nil
 		end
 	end)
-	self.cameraConnections[#self.cameraConnections + 1] = RunService.RenderStepped:Connect(function(delta)
+	track(self.cameraConnections, UIS.InputChanged, function(input, processed)
+		if not processed and input.UserInputType == Enum.UserInputType.MouseWheel and input.Position.Z ~= 0 then
+			speed = math.clamp(speed * (input.Position.Z > 0 and 1.25 or 0.8), 8, 260)
+			self.freeCameraSpeed = speed
+		end
+	end)
+	track(self.cameraConnections, UIS.WindowFocusReleased, function()
+		table.clear(held)
+		stopTurning()
+	end)
+	track(self.cameraConnections, RunService.RenderStepped, function(delta)
+		local step = math.min(delta, 1 / 15)
 		if turning then
 			local mouse = UIS:GetMouseDelta()
-			yaw = yaw - mouse.X * 0.0025
-			pitch = math.clamp(pitch - mouse.Y * 0.0025, -1.5, 1.5)
+			targetYaw = targetYaw - mouse.X * 0.003
+			targetPitch = math.clamp(targetPitch - mouse.Y * 0.003, -1.55, 1.55)
 		end
 
-		local x = (held[Enum.KeyCode.D] and 1 or 0) - (held[Enum.KeyCode.A] and 1 or 0)
-		local y = (held[Enum.KeyCode.E] and 1 or 0) - (held[Enum.KeyCode.Q] and 1 or 0)
-		local z = (held[Enum.KeyCode.S] and 1 or 0) - (held[Enum.KeyCode.W] and 1 or 0)
-		local move = Vector3.new(x, y, z)
+		local turnAlpha = 1 - math.exp(-24 * step)
+		yaw = yaw + (targetYaw - yaw) * turnAlpha
+		pitch = pitch + (targetPitch - pitch) * turnAlpha
 		local rotation = CFrame.fromOrientation(pitch, yaw, 0)
-		if move.Magnitude > 0 then
-			local speed = held[Enum.KeyCode.LeftShift] and 140 or 55
-			position = position + rotation:VectorToWorldSpace(move.Unit) * speed * delta
+
+		local forward = (held[Enum.KeyCode.W] and 1 or 0) - (held[Enum.KeyCode.S] and 1 or 0)
+		local right = (held[Enum.KeyCode.D] and 1 or 0) - (held[Enum.KeyCode.A] and 1 or 0)
+		local vertical = (held[Enum.KeyCode.E] and 1 or 0) - (held[Enum.KeyCode.Q] and 1 or 0)
+		local move = rotation.LookVector * forward
+			+ rotation.RightVector * right
+			+ Vector3.new(0, vertical, 0)
+		local multiplier = 1
+		if held[Enum.KeyCode.LeftShift] or held[Enum.KeyCode.RightShift] then
+			multiplier = 3
+		elseif held[Enum.KeyCode.LeftControl] or held[Enum.KeyCode.RightControl] then
+			multiplier = 0.25
+		end
+		local desiredVelocity = move.Magnitude > 0 and move.Unit * speed * multiplier or Vector3.new()
+
+		-- The camera now has inertia instead of moving like it remembered an appointment three maps away.
+		local moveAlpha = 1 - math.exp(-(move.Magnitude > 0 and 14 or 10) * step)
+		velocity = velocity:Lerp(desiredVelocity, moveAlpha)
+		position = position + velocity * step
+		if camera.CameraType ~= Enum.CameraType.Scriptable then
+			camera.CameraType = Enum.CameraType.Scriptable
 		end
 		camera.CFrame = CFrame.new(position) * rotation
+		camera.Focus = camera.CFrame * CFrame.new(0, 0, -512)
 	end)
 end
 
@@ -528,10 +672,7 @@ function StrategyHUD:Destroy()
 	else
 		self:_clearCamera()
 	end
-	for _, connection in ipairs(self.connections) do
-		connection:Disconnect()
-	end
-	table.clear(self.connections)
+	disconnectAll(self.connections)
 	resetLibrary(self.library)
 end
 

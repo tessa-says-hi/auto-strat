@@ -2,6 +2,7 @@ local clone = cloneref or function(value)
 	return value
 end
 
+local env = type(getgenv) == "function" and getgenv() or shared or _G
 local Players = clone(game:GetService("Players"))
 local ReplicatedStorage = clone(game:GetService("ReplicatedStorage"))
 local TeleportService = clone(game:GetService("TeleportService"))
@@ -71,6 +72,56 @@ local function timerValue()
 	local state = ReplicatedStorage:FindFirstChild("State")
 	local timer = state and state:FindFirstChild("Timer")
 	return timer and timer:FindFirstChild("Time")
+end
+
+local function disconnect(owner, key)
+	local connection = owner[key]
+	if connection then
+		connection:Disconnect()
+		owner[key] = nil
+	end
+end
+
+local function resetLibrary(library)
+	local container = library.container
+	local screen = container and container:FindFirstAncestorOfClass("ScreenGui")
+	if screen then
+		screen:Destroy()
+	end
+	library.container = nil
+	library.count = 0
+	library.toggled = true
+	library.binding = false
+	for _, key in ipairs({ "queue", "callbacks", "rainbowtable", "binds" }) do
+		if type(library[key]) == "table" then
+			table.clear(library[key])
+		end
+	end
+end
+
+local function loadUiLibrary()
+	local library = env.AutoStratRecorderUILibrary
+	if type(library) == "table" and type(library.CreateWindow) == "function" then
+		return library
+	end
+
+	local path = "GUI/UI.Luau"
+	local source = type(env.AutoStratSources) == "table" and env.AutoStratSources[path]
+	if not source then
+		local root = env.AutoStratRepo or "https://raw.githubusercontent.com/tessa-says-hi/auto-strat/main/"
+		source = game:HttpGet(root .. path, true)
+	end
+	local chunk, err = loadstring(source)
+	if not chunk then
+		error("Could not load recorder UI: " .. tostring(err), 0)
+	end
+	library = chunk()
+	env.AutoStratRecorderUILibrary = library
+	return library
+end
+
+local function shortStatus(value)
+	return tostring(value or ""):match("^[^\r\n]*") or ""
 end
 
 local function towerModel(value)
@@ -146,6 +197,8 @@ function Recorder.new()
 	return setmetatable({
 		active = false,
 		actions = {},
+		autoSkip = false,
+		autoSkipStatus = "Auto Skip is off.",
 		installed = false,
 		last = "Nothing recorded yet.",
 		meta = metadata(),
@@ -153,6 +206,8 @@ function Recorder.new()
 		nextTower = 0,
 		status = "Ready to record a strategy.",
 		towerIds = setmetatable({}, { __mode = "k" }),
+		uiSeq = 0,
+		uiText = {},
 	}, Recorder)
 end
 
@@ -195,6 +250,7 @@ function Recorder:_push(kind, value)
 	self.actions[value.seq] = value
 	self.last = string.format("%s #%d", names[kind] or kind, value.seq)
 	self.status = string.format("Recording %s", self.name)
+	self:QueueAutosave()
 end
 
 function Recorder:_snapshot(value, seen)
@@ -529,10 +585,78 @@ function Recorder:_captureExisting()
 	return #found
 end
 
+function Recorder:Autosave()
+	if #self.actions == 0 then
+		return false
+	end
+	if type(writefile) ~= "function" then
+		self.autosaveError = "writefile is not supported by this executor."
+		return false
+	end
+
+	local folder = "auto-strat"
+	local stem = cleanName(self.name):gsub("%s+", "_")
+	local file = folder .. "/" .. stem .. ".luau"
+	local backup = folder .. "/" .. stem .. "_autosave_backup.luau"
+	local ready, folderErr = pcall(function()
+		if type(isfolder) == "function" and type(makefolder) == "function" and not isfolder(folder) then
+			makefolder(folder)
+		end
+	end)
+	if not ready then
+		self.autosaveError = "folder failed: " .. tostring(folderErr)
+		return false
+	end
+
+	local built, source = pcall(self.Export, self)
+	if not built then
+		self.autosaveError = "export failed: " .. tostring(source)
+		return false
+	end
+	local backedUp, backupErr = pcall(writefile, backup, source)
+	if not backedUp then
+		self.autosaveError = "backup failed: " .. tostring(backupErr)
+		return false
+	end
+
+	self.autosaveBackup = backup
+	self.autosaveCount = #self.actions
+	self.autosaveName = self.name
+	local saved, saveErr = pcall(writefile, file, source)
+	if not saved then
+		self.autosaveError = "primary failed; recovery saved to " .. backup .. ": " .. tostring(saveErr)
+		return true, backup
+	end
+
+	self.autosaveFile = file
+	self.autosaveError = nil
+	return true, file
+end
+
+function Recorder:QueueAutosave()
+	if self.autosaveQueued or #self.actions == 0 then
+		return
+	end
+	self.autosaveQueued = true
+	task.defer(function()
+		if not self.autosaveQueued then
+			return
+		end
+		self.autosaveQueued = false
+		self:Autosave()
+	end)
+end
+
 function Recorder:Start(name)
 	if not self:Install() then
 		return false
 	end
+	self.autosaveQueued = false
+	self.autosaveCount = nil
+	self.autosaveName = nil
+	self.autosaveError = nil
+	self.autosaveFile = nil
+	self.autosaveBackup = nil
 	self.name = cleanName(name or self.name)
 	self.actions = {}
 	self.nextTower = 0
@@ -550,10 +674,23 @@ end
 function Recorder:Stop()
 	self.active = false
 	self.status = string.format("Stopped with %d action(s).", #self.actions)
+	self.autosaveQueued = false
+	if
+		#self.actions > 0
+		and (self.autosaveCount ~= #self.actions or self.autosaveName ~= self.name or self.autosaveError)
+	then
+		self:Autosave()
+	end
 	return self
 end
 
 function Recorder:Clear()
+	self.autosaveQueued = false
+	self.autosaveCount = nil
+	self.autosaveName = nil
+	self.autosaveError = nil
+	self.autosaveFile = nil
+	self.autosaveBackup = nil
 	self.actions = {}
 	self.nextTower = 0
 	self.towerIds = setmetatable({}, { __mode = "k" })
@@ -563,7 +700,121 @@ function Recorder:Clear()
 end
 
 function Recorder:SetName(value)
+	local before = self.name
 	self.name = cleanName(value)
+	if self.active and #self.actions > 0 and self.name ~= before then
+		self:QueueAutosave()
+	end
+	return self
+end
+
+function Recorder:_bindSkipTimer()
+	local timer = timerValue()
+	if self.autoSkipTimer == timer then
+		return
+	end
+	disconnect(self, "autoSkipTimerConn")
+	self.autoSkipTimer = timer
+	if timer then
+		self.autoSkipTimerConn = timer:GetPropertyChangedSignal("Value"):Connect(function()
+			self:_queueAutoSkip()
+		end)
+	end
+end
+
+function Recorder:_tryAutoSkip()
+	if not self.autoSkip or self.skipInFlight then
+		return
+	end
+
+	self:_bindSkipTimer()
+	local wave = tonumber(gameState.Wave) or 0
+	if not gameState.GameStarted or gameState.GameOver or wave <= 0 then
+		self.autoSkipVotedWave = nil
+		self.autoSkipStatus = "Waiting for a wave to start."
+		return
+	end
+	if self.autoSkipVotedWave == wave then
+		self.autoSkipStatus = string.format("Skip submitted for wave %d.", wave)
+		return
+	end
+
+	local seq = self.autoSkipSeq
+	self.skipInFlight = true
+	task.spawn(function()
+		local voting = net.Channel("Voting")
+		local ok, accepted = pcall(voting.InvokeServer, voting, "Skip")
+		self.skipInFlight = false
+		if self.autoSkip and self.autoSkipSeq == seq then
+			if ok and accepted == true then
+				self.autoSkipVotedWave = wave
+				self.autoSkipStatus = string.format("Skip submitted for wave %d.", wave)
+			elseif ok then
+				self.autoSkipStatus = string.format("Waiting for the wave %d skip vote.", wave)
+			else
+				self.autoSkipStatus = "Auto Skip error: " .. shortStatus(accepted)
+			end
+		end
+		if self.autoSkip and self.skipPending then
+			self.skipPending = false
+			self:_queueAutoSkip()
+		end
+	end)
+end
+
+function Recorder:_queueAutoSkip()
+	if not self.autoSkip then
+		return
+	end
+	if self.skipInFlight then
+		self.skipPending = true
+		return
+	end
+	if self.skipQueued then
+		return
+	end
+	self.skipQueued = true
+	task.defer(function()
+		self.skipQueued = false
+		self:_tryAutoSkip()
+	end)
+end
+
+function Recorder:SetAutoSkip(value)
+	value = value == true
+	if self.autoSkip == value and (not value or self.autoSkipGameConn) then
+		return self
+	end
+
+	self.autoSkip = value
+	self.autoSkipSeq = (self.autoSkipSeq or 0) + 1
+	self.skipQueued = false
+	self.skipPending = false
+	self.autoSkipVotedWave = nil
+	disconnect(self, "autoSkipGameConn")
+	disconnect(self, "autoSkipTimerConn")
+	self.autoSkipTimer = nil
+
+	if not value then
+		self.autoSkipStatus = "Auto Skip is off."
+		return self
+	end
+
+	self.autoSkipStatus = "Watching for the next skip vote."
+	local replicator = gameState.Replicator
+	if replicator and replicator.Changed then
+		local ok, connection = pcall(function()
+			return replicator.Changed:Connect(function()
+				self:_bindSkipTimer()
+				self:_queueAutoSkip()
+			end)
+		end)
+		if ok then
+			self.autoSkipGameConn = connection
+		end
+	end
+	self:_bindSkipTimer()
+	self:_queueAutoSkip()
 	return self
 end
 
@@ -692,16 +943,250 @@ function Recorder:Save()
 	return true, file
 end
 
+function Recorder:_setUiText(key, value)
+	value = tostring(value or "")
+	if self.uiText[key] == value then
+		return
+	end
+	self.uiText[key] = value
+	local row = self.uiRows and self.uiRows[key]
+	if row then
+		pcall(function()
+			row.Text = value
+		end)
+	end
+end
+
+function Recorder:_refreshUi()
+	self:_setUiText("state", "State: " .. shortStatus(self.status))
+	self:_setUiText("actions", string.format("Actions: %d", #self.actions))
+	self:_setUiText("last", "Last: " .. shortStatus(self.last))
+	if self.autosaveError then
+		self:_setUiText("autosave", "Autosave: " .. shortStatus(self.autosaveError))
+	elseif self.autosaveFile then
+		self:_setUiText("autosave", "Autosave: " .. self.autosaveFile)
+	elseif type(writefile) == "function" then
+		self:_setUiText("autosave", "Autosave: armed")
+	else
+		self:_setUiText("autosave", "Autosave: unavailable")
+	end
+
+	self:_setUiText("skip", "Auto Skip: " .. shortStatus(self.autoSkipStatus))
+	local host = self.host
+	if host then
+		local chain = host.CommanderChainStatus
+		if type(host.CommanderChainText) == "function" then
+			local ok, value = pcall(host.CommanderChainText, host)
+			chain = ok and value or chain
+		end
+		local stack = host.StackStatus
+		if type(host.StackPriceText) == "function" then
+			local ok, value = pcall(host.StackPriceText, host)
+			stack = ok and value or stack
+		end
+		self:_setUiText("chain", "Commander: " .. shortStatus(chain))
+		self:_setUiText("stack", "Auto Stack: " .. shortStatus(stack))
+	else
+		self:_setUiText("chain", "Commander: load Auto Gatlin to enable")
+		self:_setUiText("stack", "Auto Stack: load Auto Gatlin to enable")
+	end
+end
+
+function Recorder:_buildUi(library, seq)
+	resetLibrary(library)
+	self.uiRows = {}
+	self.uiText = {}
+	self.uiButtons = {}
+
+	local recorder = library:CreateWindow("Strategy Recorder", {})
+	local nameBox = recorder:Box("Strategy Name", {
+		default = self.name,
+		flag = "RecorderStrategyName",
+	}, function(value)
+		self:SetName(value)
+	end)
+	nameBox.Text = self.name
+
+	self.uiButtons.Start = recorder:Button("Start Recorder", function()
+		self:Start(nameBox.Text)
+	end)
+	self.uiButtons.Stop = recorder:Button("Stop Recorder", function()
+		self:Stop()
+	end)
+	self.uiButtons.Copy = recorder:Button("Copy Strategy", function()
+		self:Copy()
+	end)
+	self.uiButtons.Save = recorder:Button("Save Strategy", function()
+		self:Save()
+	end)
+	self.uiButtons.Clear = recorder:Button("Clear Recording", function()
+		self:Clear()
+	end)
+	recorder:Section("")
+	self.uiRows.state = recorder:Section("")
+	self.uiRows.actions = recorder:Section("")
+	self.uiRows.last = recorder:Section("")
+	self.uiRows.autosave = recorder:Section("")
+
+	local tools = library:CreateWindow("Recorder Tools")
+	tools:Toggle("Auto Skip", {
+		default = self.autoSkip,
+		flag = "RecorderAutoSkip",
+	}, function(value)
+		self:SetAutoSkip(value)
+	end)
+
+	local host = self.host
+	tools:Toggle("Auto Chain Commander", {
+		default = host and host.AutoCommanderChain == true or false,
+		flag = "RecorderAutoCommanderChain",
+	}, function(value)
+		if host and type(host.SetAutoCommanderChain) == "function" then
+			local ok, err = pcall(host.SetAutoCommanderChain, host, value)
+			if not ok then
+				self.status = "Auto Chain failed: " .. shortStatus(err)
+			end
+		end
+	end)
+	tools:Toggle("Auto Stack", {
+		default = host and host.AutoStacker == true or false,
+		flag = "RecorderAutoStacker",
+	}, function(value)
+		if host and type(host.SetAutoStacker) == "function" then
+			local ok, err = pcall(host.SetAutoStacker, host, value)
+			if not ok then
+				self.status = "Auto Stack failed: " .. shortStatus(err)
+			end
+		end
+	end)
+	tools:Slider("Stack Amount", {
+		default = math.clamp(tonumber(host and host.StackAmount) or 15, 1, 50),
+		min = 1,
+		max = 50,
+		flag = "RecorderStackAmount",
+	}, function(value)
+		if host and type(host.SetStackAmount) == "function" then
+			local ok, err = pcall(host.SetStackAmount, host, value)
+			if not ok then
+				self.status = "Stack Amount failed: " .. shortStatus(err)
+			end
+		end
+	end)
+	tools:Section("")
+	self.uiRows.skip = tools:Section("")
+	self.uiRows.chain = tools:Section("")
+	self.uiRows.stack = tools:Section("")
+
+	local screen = library.container and library.container.Parent
+	if screen and screen:IsA("ScreenGui") then
+		screen.Name = "AutoStratRecorderUI"
+		screen.DisplayOrder = 2147483647
+		screen.IgnoreGuiInset = true
+		screen.ResetOnSpawn = false
+		screen.ZIndexBehavior = Enum.ZIndexBehavior.Global
+	end
+
+	self.uiLibrary = library
+	self.uiReady = true
+	self.uiError = nil
+	self:_refreshUi()
+	task.spawn(function()
+		while self.uiReady and self.uiSeq == seq do
+			task.wait(0.25)
+			self:_refreshUi()
+		end
+	end)
+end
+
+function Recorder:DestroyUI()
+	self.uiSeq = self.uiSeq + 1
+	self.uiReady = false
+	self.uiLoading = false
+	local library = self.uiLibrary or env.AutoStratRecorderUILibrary
+	if type(library) == "table" then
+		pcall(resetLibrary, library)
+	end
+	self.uiLibrary = nil
+	self.uiRows = nil
+	self.uiButtons = nil
+	self.uiText = {}
+	return self
+end
+
+function Recorder:LoadUI(host, rebuild)
+	if host ~= nil then
+		self.host = host
+	end
+	if rebuild then
+		self:DestroyUI()
+	elseif self.uiReady or self.uiLoading then
+		return self
+	end
+	if env.AutoStratSkipRecorderUI then
+		return self
+	end
+
+	self.uiSeq = self.uiSeq + 1
+	local seq = self.uiSeq
+	self.uiLoading = true
+	self.uiError = nil
+	task.spawn(function()
+		local ok, err = pcall(function()
+			local library = loadUiLibrary()
+			if self.uiSeq ~= seq then
+				return
+			end
+			self:_buildUi(library, seq)
+		end)
+		if self.uiSeq ~= seq then
+			return
+		end
+		self.uiLoading = false
+		if not ok then
+			self.uiReady = false
+			self.uiError = tostring(err)
+			self.status = "Recorder UI failed: " .. shortStatus(err)
+		end
+	end)
+	return self
+end
+
+function Recorder:AttachHost(host)
+	if self.host == host and self.uiReady then
+		return self
+	end
+	self.host = host
+	return self:LoadUI(host, true)
+end
+
 function Recorder:Status()
-	return string.format("%s\n%d action(s) | %s", self.status, #self.actions, self.last)
+	local status = string.format("%s\n%d action(s) | %s", self.status, #self.actions, self.last)
+	if self.autosaveError then
+		return status .. "\nAutosave: " .. self.autosaveError
+	elseif self.autosaveFile then
+		return status .. "\nAutosaved: " .. self.autosaveFile
+	elseif type(writefile) ~= "function" then
+		return status .. "\nAutosave unavailable: this executor has no writefile."
+	end
+	return status .. "\nAutosave armed; saves after each recorded action."
 end
 
 function Recorder:Destroy()
-	self.active = false
-	if self.timerConn then
-		self.timerConn:Disconnect()
-		self.timerConn = nil
+	if self.destroyed then
+		return self
 	end
+	self.destroyed = true
+	self.active = false
+	self.autosaveQueued = false
+	if
+		#self.actions > 0
+		and (self.autosaveCount ~= #self.actions or self.autosaveName ~= self.name or self.autosaveError)
+	then
+		self:Autosave()
+	end
+	self:SetAutoSkip(false)
+	self:DestroyUI()
+	disconnect(self, "timerConn")
 	if self.invoke and self.oldInvoke and type(hookfunction) == "function" then
 		pcall(hookfunction, self.invoke, self.oldInvoke)
 	end
@@ -713,7 +1198,20 @@ function Recorder:Destroy()
 	self.oldInvoke = nil
 	self.fire = nil
 	self.oldFire = nil
+	if env.AutoStratRecorder == self then
+		env.AutoStratRecorder = nil
+	end
 	return self
 end
 
-return Recorder
+local previous = env.AutoStratRecorder
+if previous and type(previous.Destroy) == "function" then
+	pcall(previous.Destroy, previous)
+end
+
+local recorder = Recorder.new()
+env.AutoStratRecorder = recorder
+if not env.AutoStratSkipRecorderUI then
+	recorder:LoadUI(env.AutoGatlin)
+end
+return recorder

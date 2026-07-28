@@ -10,6 +10,7 @@ local CollectionService = clone(game:GetService("CollectionService"))
 local Players = clone(game:GetService("Players"))
 local ReplicatedStorage = clone(game:GetService("ReplicatedStorage"))
 local RunService = clone(game:GetService("RunService"))
+local VirtualUser = clone(game:GetService("VirtualUser"))
 local Workspace = clone(game:GetService("Workspace"))
 
 local lp = clone(Players.LocalPlayer)
@@ -135,6 +136,14 @@ local function sameNames(left, right)
 		end
 	end
 	return next(names) == nil
+end
+
+local function disconnect(owner, key)
+	local connection = owner[key]
+	if connection then
+		connection:Disconnect()
+		owner[key] = nil
+	end
 end
 
 function Strategy.new()
@@ -301,10 +310,7 @@ function Strategy:_clearQueue()
 end
 
 function Strategy:_clearRematch()
-	if self.rematchConn then
-		self.rematchConn:Disconnect()
-		self.rematchConn = nil
-	end
+	disconnect(self, "rematchConn")
 end
 
 function Strategy:_clearHud()
@@ -344,44 +350,34 @@ function Strategy:_showHud(seq)
 end
 
 function Strategy:_clearReady()
-	if self.readyAddedConn then
-		self.readyAddedConn:Disconnect()
-		self.readyAddedConn = nil
-	end
-	if self.readyChangedConn then
-		self.readyChangedConn:Disconnect()
-		self.readyChangedConn = nil
-	end
-	if self.readyLobbyConn then
-		self.readyLobbyConn:Disconnect()
-		self.readyLobbyConn = nil
-	end
+	disconnect(self, "readyAddedConn")
+	disconnect(self, "readyChangedConn")
+	disconnect(self, "readyLobbyConn")
 end
 
 function Strategy:_clearLobbyVote()
-	if self.lobbyChildConn then
-		self.lobbyChildConn:Disconnect()
-		self.lobbyChildConn = nil
-	end
-	if self.lobbyAttributeConn then
-		self.lobbyAttributeConn:Disconnect()
-		self.lobbyAttributeConn = nil
-	end
-	if self.lobbyEventConn then
-		self.lobbyEventConn:Disconnect()
-		self.lobbyEventConn = nil
-	end
-	if self.lobbyUiConn then
-		self.lobbyUiConn:Disconnect()
-		self.lobbyUiConn = nil
-	end
+	disconnect(self, "lobbyChildConn")
+	disconnect(self, "lobbyAttributeConn")
+	disconnect(self, "lobbyEventConn")
+	disconnect(self, "lobbyUiConn")
 end
 
 function Strategy:_clearStarted()
-	if self.startedConn then
-		self.startedConn:Disconnect()
-		self.startedConn = nil
+	disconnect(self, "startedConn")
+end
+
+function Strategy:_bindAntiAfk()
+	if self.antiAfkConn then
+		return
 	end
+
+	self.antiAfkConn = lp.Idled:Connect(function()
+		local camera = Workspace.CurrentCamera
+		pcall(function()
+			VirtualUser:CaptureController()
+			VirtualUser:ClickButton2(Vector2.zero, camera and camera.CFrame or CFrame.new())
+		end)
+	end)
 end
 
 function Strategy:_bindRematch(seq)
@@ -692,9 +688,7 @@ function Strategy:_bindReady(seq, name)
 		if sent or self.seq ~= seq or not self.running then
 			return
 		end
-		if self.readyChangedConn then
-			self.readyChangedConn:Disconnect()
-		end
+		disconnect(self, "readyChangedConn")
 
 		local function submit()
 			if
@@ -918,9 +912,7 @@ function Strategy:_prepare(seq)
 end
 
 function Strategy:_bindClock()
-	if self.timerConn then
-		self.timerConn:Disconnect()
-	end
+	disconnect(self, "timerConn")
 	self.timer = timerValue()
 	self.timerRaw = self.timer and tonumber(self.timer.Value) or 0
 	self.timerAt = Workspace:GetServerTimeNow()
@@ -1052,6 +1044,7 @@ function Strategy:Run()
 	self.seq = self.seq + 1
 	local seq = self.seq
 	getgenv().AutoStratRunner = self
+	self:_bindAntiAfk()
 
 	if game.PlaceId == lobbyId then
 		self.status = "Preparing matchmaking"
@@ -1089,12 +1082,10 @@ function Strategy:Stop()
 	self:_clearReady()
 	self:_clearLobbyVote()
 	self:_clearStarted()
+	disconnect(self, "antiAfkConn")
 	self.rematching = false
 	self:_clearQueue()
-	if self.timerConn then
-		self.timerConn:Disconnect()
-		self.timerConn = nil
-	end
+	disconnect(self, "timerConn")
 	if getgenv().AutoStratRunner == self then
 		getgenv().AutoStratRunner = nil
 	end

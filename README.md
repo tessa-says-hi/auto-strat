@@ -6,12 +6,22 @@ Tower Defense Simulator tools with an in-game strategy recorder and replay core.
 loadstring(game:HttpGet("https://raw.githubusercontent.com/tessa-says-hi/auto-strat/main/Main.Luau", true))()
 ```
 
-Open the **Main** tab and use **Strategy Recorder**:
+Load the standalone recorder and utility UI:
+
+```lua
+loadstring(game:HttpGet("https://raw.githubusercontent.com/tessa-says-hi/auto-strat/main/src/Recorder.Luau", true))()
+```
+
+Use the **Strategy Recorder** window to:
 
 1. Enter a strategy name.
 2. Start recording before placing towers.
 3. Play normally.
 4. Stop, then copy or save the generated strategy.
+
+The separate **Recorder Tools** window includes Auto Skip. When Auto Gatlin is
+also loaded, it adds Auto Chain Commander, Auto Stack, and the stack amount
+control without duplicating them in the main Auto Gatlin UI.
 
 The recorder currently captures:
 
