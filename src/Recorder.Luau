@@ -13,6 +13,7 @@ local net = require(ReplicatedStorage.Shared.Modules.Network)
 local gameState = require(ReplicatedStorage.Shared.Modules.GameState)
 local playerLib = require(ReplicatedStorage.Client.Modules.Replicators.PlayerReplicator)
 local towerLib = require(ReplicatedStorage.Client.Modules.Replicators.TowerReplicator)
+local autoStackLoader = "https://flowauth.net/v1/loaders/0ea3f2ebf8539e3b0151c5b3e34f16e6.lua"
 
 local Recorder = {}
 Recorder.__index = Recorder
@@ -124,6 +125,12 @@ local function shortStatus(value)
 	return tostring(value or ""):match("^[^\r\n]*") or ""
 end
 
+local function isStacker(value)
+	return type(value) == "table"
+		and type(value.SetAutoStacker) == "function"
+		and type(value.SetStackAmount) == "function"
+end
+
 local function towerModel(value)
 	if typeof(value) ~= "Instance" then
 		return nil
@@ -204,6 +211,9 @@ function Recorder.new()
 		meta = metadata(),
 		name = "MyStrategy",
 		nextTower = 0,
+		stackAmount = 15,
+		stackStatus = "Protected",
+		stackWanted = false,
 		status = "Ready to record a strategy.",
 		towerIds = setmetatable({}, { __mode = "k" }),
 		uiSeq = 0,
@@ -525,7 +535,7 @@ function Recorder:Install()
 		return false
 	end
 
-	local okInvoke, oldInvoke = pcall(hookfunction, invoke, function(ch, action, ...)
+	local invokeHook = function(ch, action, ...)
 		local args = table.pack(...)
 		local result = table.pack(self.oldInvoke(ch, action, ...))
 		local ok, err = pcall(self._captureInvoke, self, ch.Channel, action, args, result)
@@ -533,13 +543,15 @@ function Recorder:Install()
 			self.status = "Recorder hook error: " .. tostring(err)
 		end
 		return table.unpack(result, 1, result.n)
-	end)
+	end
+	local okInvoke, oldInvoke = pcall(hookfunction, invoke, invokeHook)
 	if not okInvoke or type(oldInvoke) ~= "function" then
 		self.status = "Could not hook InvokeServer: " .. tostring(oldInvoke)
 		return false
 	end
 	self.oldInvoke = oldInvoke
 	self.invoke = invoke
+	self.invokeHook = invokeHook
 
 	local okFire, oldFire = pcall(hookfunction, fire, function(ch, action, ...)
 		local args = table.pack(...)
@@ -553,6 +565,7 @@ function Recorder:Install()
 		pcall(hookfunction, invoke, oldInvoke)
 		self.invoke = nil
 		self.oldInvoke = nil
+		self.invokeHook = nil
 		self.status = "Could not hook FireServer: " .. tostring(oldFire)
 		return false
 	end
@@ -818,6 +831,108 @@ function Recorder:SetAutoSkip(value)
 	return self
 end
 
+function Recorder:_stackTarget(authorize)
+	local host = self.host
+	if isStacker(host) then
+		return host
+	end
+
+	local stacker = env.AutoStratAutoStacker
+	if isStacker(stacker) then
+		return stacker
+	end
+	if not authorize then
+		return nil
+	end
+	if self.stackLoading then
+		return nil, "Authorization pending"
+	end
+
+	self.stackLoading = true
+	self.stackStatus = "Authorizing"
+	local ok, result = pcall(function()
+		local source = game:HttpGet(autoStackLoader, true)
+		local chunk, compileError = loadstring(source)
+		if not chunk then
+			error(compileError, 0)
+		end
+		return chunk()
+	end)
+	self.stackLoading = false
+	if not ok then
+		self.stackStatus = "Auth failed"
+		return nil, shortStatus(result)
+	end
+
+	stacker = env.AutoStratAutoStacker
+	if not isStacker(stacker) and isStacker(result) then
+		stacker = result
+		env.AutoStratAutoStacker = result
+	end
+	if not isStacker(stacker) then
+		self.stackStatus = "Auth failed"
+		return nil, "Protected stacker did not initialize"
+	end
+
+	self.stackTarget = stacker
+	self.stackOwnsTarget = true
+	return stacker
+end
+
+function Recorder:SetAutoStacker(value)
+	value = value == true
+	self.stackWanted = value
+	self.stackSeq = (self.stackSeq or 0) + 1
+	local seq = self.stackSeq
+
+	local stacker, resolveError = self:_stackTarget(value)
+	if seq ~= self.stackSeq or self.stackWanted ~= value then
+		if stacker and type(stacker.SetAutoStacker) == "function" then
+			pcall(stacker.SetAutoStacker, stacker, false)
+		end
+		return false, "Cancelled"
+	end
+	if not stacker then
+		self.stackStatus = value and "Auth failed" or "Off"
+		return not value, resolveError
+	end
+
+	local amountOk, amountError = pcall(stacker.SetStackAmount, stacker, self.stackAmount)
+	if not amountOk then
+		self.stackStatus = "Amount failed"
+		return false, shortStatus(amountError)
+	end
+	local ok, result = pcall(stacker.SetAutoStacker, stacker, value)
+	if not ok then
+		self.stackStatus = "Stack failed"
+		return false, shortStatus(result)
+	end
+	if value and stacker.AutoStacker ~= true then
+		self.stackStatus = "Unavailable"
+		return false, shortStatus(stacker.StackStatus)
+	end
+
+	self.stackStatus = value and string.format("On x%d", self.stackAmount) or "Off"
+	return true
+end
+
+function Recorder:SetStackAmount(value)
+	self.stackAmount = math.clamp(math.floor(tonumber(value) or 15), 1, 50)
+	local stacker = self:_stackTarget(false)
+	if not stacker then
+		return true
+	end
+	local ok, err = pcall(stacker.SetStackAmount, stacker, self.stackAmount)
+	if not ok then
+		self.stackStatus = "Amount failed"
+		return false, shortStatus(err)
+	end
+	if self.stackWanted then
+		self.stackStatus = string.format("On x%d", self.stackAmount)
+	end
+	return true
+end
+
 function Recorder:_at(action)
 	local at = action.at
 	return string.format("%d, %d, %d, %d", at.wave, at.minute, at.second, at.millisecond)
@@ -958,37 +1073,47 @@ function Recorder:_setUiText(key, value)
 end
 
 function Recorder:_refreshUi()
-	self:_setUiText("state", "State: " .. shortStatus(self.status))
+	local state = self.active and "Recording"
+		or self.status:match("^Stopped") and "Stopped"
+		or self.status:lower():find("failed", 1, true) and "Error"
+		or "Ready"
+	self:_setUiText("state", "State: " .. state)
 	self:_setUiText("actions", string.format("Actions: %d", #self.actions))
-	self:_setUiText("last", "Last: " .. shortStatus(self.last))
+	local last = shortStatus(self.last)
+	self:_setUiText("last", "Last: " .. (last:find("#", 1, true) and last or "None"))
 	if self.autosaveError then
-		self:_setUiText("autosave", "Autosave: " .. shortStatus(self.autosaveError))
+		self:_setUiText("autosave", "Autosave: Error")
 	elseif self.autosaveFile then
-		self:_setUiText("autosave", "Autosave: " .. self.autosaveFile)
+		self:_setUiText("autosave", "Autosave: Saved")
 	elseif type(writefile) == "function" then
-		self:_setUiText("autosave", "Autosave: armed")
+		self:_setUiText("autosave", "Autosave: Armed")
 	else
-		self:_setUiText("autosave", "Autosave: unavailable")
+		self:_setUiText("autosave", "Autosave: N/A")
 	end
 
-	self:_setUiText("skip", "Auto Skip: " .. shortStatus(self.autoSkipStatus))
+	local skip = not self.autoSkip and "Off"
+		or self.autoSkipStatus:lower():find("error", 1, true) and "Error"
+		or self.autoSkipVotedWave and string.format("Wave %d", self.autoSkipVotedWave)
+		or "Waiting"
+	self:_setUiText("skip", "Skip: " .. skip)
 	local host = self.host
 	if host then
-		local chain = host.CommanderChainStatus
-		if type(host.CommanderChainText) == "function" then
-			local ok, value = pcall(host.CommanderChainText, host)
-			chain = ok and value or chain
-		end
-		local stack = host.StackStatus
-		if type(host.StackPriceText) == "function" then
-			local ok, value = pcall(host.StackPriceText, host)
-			stack = ok and value or stack
-		end
-		self:_setUiText("chain", "Commander: " .. shortStatus(chain))
-		self:_setUiText("stack", "Auto Stack: " .. shortStatus(stack))
+		self:_setUiText("chain", "Chain: " .. (host.AutoCommanderChain and "On" or "Off"))
 	else
-		self:_setUiText("chain", "Commander: load Auto Gatlin to enable")
-		self:_setUiText("stack", "Auto Stack: load Auto Gatlin to enable")
+		self:_setUiText("chain", "Chain: Unavailable")
+	end
+
+	local stacker = self:_stackTarget(false)
+	if stacker and stacker.AutoStacker then
+		self:_setUiText("stack", string.format("Stack: On x%d", tonumber(stacker.StackAmount) or self.stackAmount))
+	elseif self.stackLoading then
+		self:_setUiText("stack", "Stack: Authorizing")
+	elseif self.stackStatus == "Auth failed" then
+		self:_setUiText("stack", "Stack: Auth failed")
+	elseif stacker then
+		self:_setUiText("stack", "Stack: Off")
+	else
+		self:_setUiText("stack", "Stack: Protected")
 	end
 end
 
@@ -1048,28 +1173,31 @@ function Recorder:_buildUi(library, seq)
 			end
 		end
 	end)
-	tools:Toggle("Auto Stack", {
-		default = host and host.AutoStacker == true or false,
+	local stacker = self:_stackTarget(false)
+	self.uiButtons.Stack = tools:Toggle("Auto Stack", {
+		default = stacker and stacker.AutoStacker == true or false,
 		flag = "RecorderAutoStacker",
 	}, function(value)
-		if host and type(host.SetAutoStacker) == "function" then
-			local ok, err = pcall(host.SetAutoStacker, host, value)
-			if not ok then
+		task.spawn(function()
+			local ok, err = self:SetAutoStacker(value)
+			if value and not ok then
 				self.status = "Auto Stack failed: " .. shortStatus(err)
+				local button = self.uiButtons and self.uiButtons.Stack
+				if button then
+					button:Set(false)
+				end
 			end
-		end
+		end)
 	end)
-	tools:Slider("Stack Amount", {
-		default = math.clamp(tonumber(host and host.StackAmount) or 15, 1, 50),
+	self.uiButtons.StackAmount = tools:Slider("Stack Amount", {
+		default = math.clamp(tonumber(stacker and stacker.StackAmount) or self.stackAmount, 1, 50),
 		min = 1,
 		max = 50,
 		flag = "RecorderStackAmount",
 	}, function(value)
-		if host and type(host.SetStackAmount) == "function" then
-			local ok, err = pcall(host.SetStackAmount, host, value)
-			if not ok then
-				self.status = "Stack Amount failed: " .. shortStatus(err)
-			end
+		local ok, err = self:SetStackAmount(value)
+		if not ok then
+			self.status = "Stack Amount failed: " .. shortStatus(err)
 		end
 	end)
 	tools:Section("")
@@ -1178,6 +1306,13 @@ function Recorder:Destroy()
 	self.destroyed = true
 	self.active = false
 	self.autosaveQueued = false
+	self.stackSeq = (self.stackSeq or 0) + 1
+	self.stackWanted = false
+	if self.stackOwnsTarget and isStacker(self.stackTarget) and type(self.stackTarget.Destroy) == "function" then
+		pcall(self.stackTarget.Destroy, self.stackTarget)
+	end
+	self.stackTarget = nil
+	self.stackOwnsTarget = false
 	if
 		#self.actions > 0
 		and (self.autosaveCount ~= #self.actions or self.autosaveName ~= self.name or self.autosaveError)
@@ -1187,7 +1322,18 @@ function Recorder:Destroy()
 	self:SetAutoSkip(false)
 	self:DestroyUI()
 	disconnect(self, "timerConn")
-	if self.invoke and self.oldInvoke and type(hookfunction) == "function" then
+	local stacker = env.AutoStratAutoStacker
+	local stackerOwnsHook = false
+	if
+		isStacker(stacker)
+		and type(stacker.DetachRecorderHook) == "function"
+		and self.invokeHook
+		and self.oldInvoke
+	then
+		local ok, detached = pcall(stacker.DetachRecorderHook, stacker, self.invokeHook, self.oldInvoke)
+		stackerOwnsHook = ok and detached == true
+	end
+	if self.invoke and self.oldInvoke and not stackerOwnsHook and type(hookfunction) == "function" then
 		pcall(hookfunction, self.invoke, self.oldInvoke)
 	end
 	if self.fire and self.oldFire and type(hookfunction) == "function" then
@@ -1196,6 +1342,7 @@ function Recorder:Destroy()
 	self.installed = false
 	self.invoke = nil
 	self.oldInvoke = nil
+	self.invokeHook = nil
 	self.fire = nil
 	self.oldFire = nil
 	if env.AutoStratRecorder == self then
