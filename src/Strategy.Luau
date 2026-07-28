@@ -15,12 +15,18 @@ local VirtualUser = clone(game:GetService("VirtualUser"))
 local Workspace = clone(game:GetService("Workspace"))
 
 local lp = clone(Players.LocalPlayer)
+local clientModules = ReplicatedStorage:WaitForChild("Client"):WaitForChild("Modules")
 local shared = ReplicatedStorage:WaitForChild("Shared")
 local modules = shared:WaitForChild("Modules")
 local gameState = require(modules:WaitForChild("GameState"))
 local net = require(modules:WaitForChild("Network"))
 local newNet = require(modules:WaitForChild("NewNetwork"))
+local playerReplicator = require(
+	clientModules:WaitForChild("Replicators"):WaitForChild("PlayerReplicator")
+)
+local tagReplicator = require(clientModules:WaitForChild("TagReplicator"))
 local gameManager = newNet.Channel("GameManager")
+local restartVoting = net.Channel("Voting")
 local remoteEvent = clone(ReplicatedStorage:WaitForChild("RemoteEvent"))
 local remoteFunction = clone(ReplicatedStorage:WaitForChild("RemoteFunction"))
 local lobbyId = 3260590327
@@ -316,8 +322,21 @@ function Strategy:_clearQueue()
 	self.queued = false
 end
 
+function Strategy:_clearRestartVote()
+	disconnect(self, "restartVoteAddedConn")
+	disconnect(self, "restartVoteChangedConn")
+	local release = self.restartVoteRelease
+	self.restartVoteRelease = nil
+	self.restartVoteFolder = nil
+	self.restartVoteReplicator = nil
+	if release then
+		pcall(release)
+	end
+end
+
 function Strategy:_clearRematch()
 	disconnect(self, "rematchConn")
+	self:_clearRestartVote()
 end
 
 function Strategy:_clearHud()
@@ -460,26 +479,88 @@ function Strategy:_bindRematch(seq)
 		return
 	end
 
-	local function rematch()
+	local rematch
+	local function bindRestartVote(folder)
+		if self.restartVoteFolder == folder then
+			return self.restartVoteReplicator
+		end
+
+		self:_clearRestartVote()
+		local replicator, release = tagReplicator.acquireReplicatorEntityFromFolder(folder)
+		self.restartVoteFolder = folder
+		self.restartVoteReplicator = replicator
+		self.restartVoteRelease = release
+		self.restartVoteChangedConn = replicator.Changed:Connect(function()
+			rematch()
+		end)
+		return replicator
+	end
+
+	local function getRestartVote()
+		for _, folder in ipairs(CollectionService:GetTagged("VoteManager")) do
+			local replicator = bindRestartVote(folder)
+			if replicator:Get("Title") == "Restart?" and replicator:Get("Enabled") == true then
+				return replicator
+			end
+		end
+
+		if not self.restartVoteAddedConn then
+			self.restartVoteAddedConn = CollectionService:GetInstanceAddedSignal("VoteManager"):Connect(function(folder)
+				bindRestartVote(folder)
+				rematch()
+			end)
+		end
+	end
+
+	rematch = function()
 		if self.seq ~= seq or self.rematching or gameState.GameOver ~= true or gameState.WinningTeam == nil then
 			return
 		end
+
+		local player = playerReplicator.GetLocalPlayerRaw()
+		local team = player and player.Replicator:Get("Team")
+		local won = self:_mode() == "pvp"
+			or (team ~= nil and gameState.WinningTeam == team)
+			or (team == nil and (tonumber(gameState.Health) or 0) > 0)
+		local voted = true
+		if not won then
+			local vote = getRestartVote()
+			if not vote then
+				self.status = "Waiting for Restart Match vote"
+				return
+			end
+			local yes = vote:Get("YesVoted")
+			voted = type(yes) == "table" and table.find(yes, lp.UserId) ~= nil
+		end
+
 		self.rematching = true
-		self:_clearRematch()
-		self.status = "Queueing Play Again"
+		self.status = won and "Queueing Play Again" or "Queueing Restart Match"
 		local ok, queued, err = pcall(self._queue, self)
 		if not ok or queued ~= true then
-			self.status = tostring(err or queued or "Could not queue Play Again")
+			self.status = tostring(err or queued or (won and "Could not queue Play Again" or "Could not queue Restart Match"))
 			self.rematching = false
 			return
 		end
-		self.status = "Playing again"
+
+		if not won and not voted then
+			local voteSent, voteErr = pcall(restartVoting.InvokeServer, restartVoting, "Skip")
+			if not voteSent then
+				self:_clearQueue()
+				self.status = "Restart Match vote failed: " .. tostring(voteErr)
+				self.rematching = false
+				return
+			end
+		end
+
+		self.status = won and "Playing again" or "Restarting match"
 		local sent, sendErr = pcall(gameManager.fireServer, gameManager, "Rematch")
 		if not sent then
 			self:_clearQueue()
-			self.status = "Play Again failed: " .. tostring(sendErr)
+			self.status = (won and "Play Again failed: " or "Restart Match failed: ") .. tostring(sendErr)
 			self.rematching = false
+			return
 		end
+		self:_clearRematch()
 	end
 
 	self.rematchConn = gameState.Replicator.Changed:Connect(rematch)
