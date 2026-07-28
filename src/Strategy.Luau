@@ -23,13 +23,14 @@ local gameManager = newNet.Channel("GameManager")
 local remoteEvent = clone(ReplicatedStorage:WaitForChild("RemoteEvent"))
 local remoteFunction = clone(ReplicatedStorage:WaitForChild("RemoteFunction"))
 local lobbyId = 3260590327
-local repoRoot = getgenv().AutoStratRoot or "https://raw.githubusercontent.com/tessa-says-hi/auto-strat/main/"
-local hudUrl = "https://raw.githubusercontent.com/tessa-says-hi/auto-strat/main/GUI/StrategyHUD.Luau"
-local uiUrl = "https://raw.githubusercontent.com/tessa-says-hi/auto-strat/main/GUI/UI.Luau"
+local repoRoot = getgenv().AutoStratRoot
+	or "https://raw.githubusercontent.com/tessa-says-hi/auto-strat/refs/heads/main/"
+local hudUrl = repoRoot .. "GUI/StrategyHUD.Luau"
+local uiUrl = repoRoot .. "GUI/UI.Luau"
 local hudClass
 
 local function loadRemote(url, name)
-	local source = game:HttpGet(url, true)
+	local source = game:HttpGet(url, false)
 	local chunk, err = loadstring(source)
 	if not chunk then
 		error(string.format("Could not load %s: %s", name, tostring(err)), 0)
