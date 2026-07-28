@@ -5,6 +5,7 @@ end
 local Players = clone(game:GetService("Players"))
 local ReplicatedStorage = clone(game:GetService("ReplicatedStorage"))
 local RunService = clone(game:GetService("RunService"))
+local TextService = clone(game:GetService("TextService"))
 local UIS = clone(game:GetService("UserInputService"))
 local Workspace = clone(game:GetService("Workspace"))
 
@@ -152,8 +153,7 @@ function StrategyHUD:_row(window, key, name)
 		Text = name .. ": 0",
 		TextColor3 = self.library.options.textcolor,
 		TextSize = 14,
-		TextStrokeColor3 = self.library.options.strokecolor,
-		TextStrokeTransparency = self.library.options.textstroke,
+		TextStrokeTransparency = 1,
 	})
 	self.rows[key] = label
 	window:Resize()
@@ -179,11 +179,11 @@ function StrategyHUD:_build()
 		fontsize = 14,
 		strokecolor = Color3.new(),
 		textcolor = Color3.new(1, 1, 1),
-		textstroke = 0.65,
+		textstroke = 1,
 		titlefont = Enum.Font.Code,
 		titlesize = 15,
 		titletextcolor = Color3.new(1, 1, 1),
-		titlestroke = 0.55,
+		titlestroke = 1,
 		titlestrokecolor = Color3.new(),
 		topcolor = Color3.fromRGB(25, 25, 25),
 		underlinecolor = Color3.fromRGB(65, 235, 92),
@@ -230,24 +230,29 @@ function StrategyHUD:_build()
 		BorderSizePixel = 1,
 		ClipsDescendants = true,
 		Parent = screen,
-		Position = UDim2.fromOffset(435, 0),
-		Size = UDim2.new(1, -455, 0, 30),
+		Position = UDim2.fromOffset(0, 0),
+		Size = UDim2.new(1, 0, 0, 30),
 		ZIndex = 20,
 	})
+	local message = "Auto Strats made by Money Maker, get script on Money Maker Development discord"
+	local textWidth = TextService:GetTextSize(message, 15, Enum.Font.GothamBold, Vector2.new(2000, 30)).X
+	local arrowWidth = 42
+	local gap = 7
+	local contentWidth = textWidth + (arrowWidth * 2) + (gap * 2)
 	local content = self.library:Create("Frame", {
 		Name = "Content",
 		AnchorPoint = Vector2.new(0.5, 0),
 		BackgroundTransparency = 1,
 		Parent = banner,
 		Position = UDim2.fromScale(0.5, 0),
-		Size = UDim2.fromOffset(760, 30),
+		Size = UDim2.fromOffset(contentWidth, 30),
 		ZIndex = 21,
 	})
 	local scale = self.library:Create("UIScale", {
 		Name = "Scale",
 		Parent = content,
 	})
-	local function textLabel(name, text, position, size)
+	local function textLabel(name, text, position, size, alignment)
 		return self.library:Create("TextLabel", {
 			Name = name,
 			BackgroundTransparency = 1,
@@ -258,37 +263,38 @@ function StrategyHUD:_build()
 			Text = text,
 			TextColor3 = Color3.new(1, 1, 1),
 			TextSize = 15,
-			TextStrokeColor3 = Color3.new(),
-			TextStrokeTransparency = 0.35,
+			TextStrokeTransparency = 1,
+			TextXAlignment = alignment or Enum.TextXAlignment.Center,
+			TextYAlignment = Enum.TextYAlignment.Center,
 			ZIndex = 22,
 		})
 	end
 
-	self.leftArrow = textLabel("LeftArrow", "--->", UDim2.fromOffset(0, 0), UDim2.fromOffset(55, 30))
-	textLabel(
-		"Message",
-		"Auto Strats made by Money Maker, get script on Money Maker Development discord",
-		UDim2.fromOffset(55, 0),
-		UDim2.fromOffset(650, 30)
+	self.leftArrow = textLabel(
+		"LeftArrow",
+		"--->",
+		UDim2.fromOffset(0, 0),
+		UDim2.fromOffset(arrowWidth, 30),
+		Enum.TextXAlignment.Right
 	)
-	self.rightArrow = textLabel("RightArrow", "<---", UDim2.fromOffset(705, 0), UDim2.fromOffset(55, 30))
+	textLabel("Message", message, UDim2.fromOffset(arrowWidth + gap, 0), UDim2.fromOffset(textWidth, 30))
+	self.rightArrow = textLabel(
+		"RightArrow",
+		"<---",
+		UDim2.fromOffset(arrowWidth + gap + textWidth + gap, 0),
+		UDim2.fromOffset(arrowWidth, 30),
+		Enum.TextXAlignment.Left
+	)
 	self.banner = banner
 
 	local function layout()
 		if not self.alive or not banner.Parent then
 			return
 		end
-		local width = container.AbsoluteSize.X + 30
-		if width < 900 then
-			container.Position = UDim2.fromOffset(20, 40)
-			banner.Position = UDim2.fromOffset(20, 0)
-			banner.Size = UDim2.new(1, -40, 0, 30)
-		else
-			container.Position = UDim2.fromOffset(20, 20)
-			banner.Position = UDim2.fromOffset(435, 0)
-			banner.Size = UDim2.new(1, -455, 0, 30)
-		end
-		scale.Scale = math.min(1, math.max((banner.AbsoluteSize.X - 10) / 760, 0.55))
+		container.Position = UDim2.fromOffset(-8, 38)
+		banner.Position = UDim2.fromOffset(0, 0)
+		banner.Size = UDim2.new(1, 0, 0, 30)
+		scale.Scale = math.min(1, math.max((banner.AbsoluteSize.X - 16) / contentWidth, 0.55))
 	end
 	self.connections[#self.connections + 1] = container:GetPropertyChangedSignal("AbsoluteSize"):Connect(layout)
 	self.connections[#self.connections + 1] = banner:GetPropertyChangedSignal("AbsoluteSize"):Connect(layout)
@@ -301,18 +307,6 @@ function StrategyHUD:_build()
 end
 
 function StrategyHUD:_bind()
-	local player = playerLib and playerLib.GetLocalPlayerRaw()
-	if player and player.Replicator then
-		self.connections[#self.connections + 1] = player.Replicator.Changed:Connect(function()
-			self:Refresh()
-		end)
-	end
-	if self.gameState.Replicator then
-		self.connections[#self.connections + 1] = self.gameState.Replicator.Changed:Connect(function()
-			self:Refresh()
-		end)
-	end
-
 	task.spawn(function()
 		while self.alive do
 			self:Refresh()
@@ -332,33 +326,30 @@ function StrategyHUD:_animateBanner()
 				end
 				self.leftArrow.TextTransparency = 1
 				self.rightArrow.TextTransparency = 1
-				task.wait(0.16)
+				task.wait(0.18)
 				if not self.alive then
 					return
 				end
 				self.leftArrow.TextTransparency = 0
 				self.rightArrow.TextTransparency = 0
-				task.wait(0.16)
+				task.wait(0.18)
 			end
-			for _ = 1, 3 do
-				for count = 3, 0, -1 do
+			local dashCount = 3
+			for pass = 1, 6 do
+				local step = pass % 2 == 1 and -1 or 1
+				for _ = 1, 3 do
 					if not self.alive then
 						return
 					end
-					self.leftArrow.Text = string.rep("-", count) .. ">"
-					self.rightArrow.Text = "<" .. string.rep("-", count)
-					task.wait(0.1)
-				end
-				for count = 1, 3 do
-					if not self.alive then
-						return
-					end
-					self.leftArrow.Text = string.rep("-", count) .. ">"
-					self.rightArrow.Text = "<" .. string.rep("-", count)
-					task.wait(0.1)
+					dashCount = dashCount + step
+					self.leftArrow.Text = string.rep("-", dashCount) .. ">"
+					self.rightArrow.Text = "<" .. string.rep("-", dashCount)
+					task.wait(0.11)
 				end
 			end
-			task.wait(0.35)
+			self.leftArrow.Text = "--->"
+			self.rightArrow.Text = "<---"
+			task.wait(0.4)
 		end
 	end)
 end

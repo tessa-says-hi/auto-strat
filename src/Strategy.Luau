@@ -343,16 +343,6 @@ function Strategy:_showHud(seq)
 	self.hud = hud
 end
 
-function Strategy:_refreshHud()
-	if not self.hud then
-		return
-	end
-	local ok = pcall(self.hud.Refresh, self.hud)
-	if not ok then
-		self:_clearHud()
-	end
-end
-
 function Strategy:_clearReady()
 	if self.readyAddedConn then
 		self.readyAddedConn:Disconnect()
@@ -407,7 +397,6 @@ function Strategy:_bindRematch(seq)
 		end
 		self.rematching = true
 		self:_clearRematch()
-		self:_clearHud()
 		self.status = "Queueing Play Again"
 		local ok, queued, err = pcall(self._queue, self)
 		if not ok or queued ~= true then
@@ -1041,7 +1030,6 @@ function Strategy:_play(seq)
 		end
 		self.status = string.format("Running %s %d/%d", action.kind, index, #self.actions)
 		local ok, success, msg = pcall(self._run, self, action)
-		self:_refreshHud()
 		if not ok or success == false then
 			self.status = tostring(msg or success)
 			failed = true
