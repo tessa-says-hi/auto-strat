@@ -2,6 +2,7 @@ repeat
 	task.wait()
 until game:IsLoaded() and game.PlaceId ~= 0
 
+local autoGatlinRequested = getgenv().AutoGatlin == true
 local clone = cloneref or function(value)
 	return value
 end
@@ -25,6 +26,7 @@ local remoteFunction = clone(ReplicatedStorage:WaitForChild("RemoteFunction"))
 local lobbyId = 3260590327
 local repoRoot = getgenv().AutoStratRoot
 	or "https://raw.githubusercontent.com/tessa-says-hi/auto-strat/refs/heads/main/"
+local autoGatlinUrl = "https://flowauth.net/v1/loaders/216b4e6664ad89af21f227b9d0982ad9.lua"
 local hudUrl = repoRoot .. "GUI/StrategyHUD.Luau"
 local uiUrl = repoRoot .. "GUI/UI.Luau"
 local userMorphUrl = "https://flowauth.net/v1/loaders/43a009dcf29febe11a6ba850ca4149bd.lua"
@@ -151,6 +153,7 @@ end
 function Strategy.new()
 	return setmetatable({
 		actions = {},
+		autoGatlin = autoGatlinRequested,
 		loadout = {},
 		meta = {},
 		name = "Strategy",
@@ -279,6 +282,7 @@ function Strategy:_resume()
 	local url = repoRoot .. "src/Strategy.Luau"
 	return table.concat({
 		"repeat task.wait() until game:IsLoaded() and game.PlaceId ~= 0",
+		"getgenv().AutoGatlin = " .. tostring(self.autoGatlin == true),
 		"getgenv().AutoStratUserMorph = " .. tostring(getgenv().AutoStratUserMorph == true),
 		"getgenv().AutoStratRoot = " .. quote(repoRoot),
 		"local TDS = loadstring(game:HttpGet(" .. quote(url) .. ", false))()",
@@ -330,6 +334,40 @@ function Strategy:_clearUserMorph()
 	if type(controller) == "table" and type(controller.Stop) == "function" then
 		pcall(controller.Stop, controller)
 	end
+end
+
+function Strategy:_clearAutoGatlin()
+	local controller = self.autoGatlinController
+	self.autoGatlinController = nil
+	if type(controller) == "table" and type(controller.Stop) == "function" then
+		pcall(controller.Stop, controller)
+	end
+end
+
+function Strategy:_loadAutoGatlin(seq)
+	if not self.autoGatlin or game.PlaceId == lobbyId or self.seq ~= seq then
+		return
+	end
+
+	getgenv().AutoGatlin = true
+	local ok, result = pcall(loadRemote, autoGatlinUrl, "Gatlin Only")
+	local controller = result
+	if type(controller) ~= "table" or type(controller.Stop) ~= "function" then
+		controller = getgenv().AutoGatlin
+	end
+
+	local valid = type(controller) == "table" and type(controller.Stop) == "function"
+	if not ok or not valid or self.seq ~= seq then
+		if valid then
+			pcall(controller.Stop, controller)
+		end
+		if self.seq == seq then
+			self.autoGatlinError = ok and "Auto Gatlin did not start." or tostring(result)
+		end
+		return
+	end
+
+	self.autoGatlinController = controller
 end
 
 function Strategy:_loadUserMorph(seq)
@@ -1097,6 +1135,7 @@ function Strategy:Run()
 		return self
 	end
 
+	self:_loadAutoGatlin(seq)
 	self:_bindRematch(seq)
 	task.spawn(function()
 		local ready, readyErr = self:_prepare(seq)
@@ -1117,6 +1156,7 @@ function Strategy:Stop()
 	self.status = "Stopped"
 	self:_clearRematch()
 	self:_clearHud()
+	self:_clearAutoGatlin()
 	self:_clearUserMorph()
 	self:_clearReady()
 	self:_clearLobbyVote()

@@ -19,20 +19,24 @@ Set a flag before the loadstring that uses it. All flags default to `false`.
 | Flag | Used by | Effect |
 | --- | --- | --- |
 | `getgenv().AutoStratUserMorph` | Strategy | Morphs the local character into Roblox (user ID `1`) without loading the main UI. The setting is preserved across strategy teleports and Play Again. |
-| `getgenv().AutoGatlinSkipUI` | Auto Gatlin | Starts Auto Gatlin without opening its UI. |
+| `getgenv().AutoGatlin` | Strategy | Starts the protected Gatlin-only controller with no Auto Gatlin UI. Set it to `true` for a strategy that uses Gatling Gun. The setting is preserved across strategy teleports and Play Again. |
 | `getgenv().AutoStratSkipRecorderUI` | Recorder | Loads the recorder object without opening the Recorder or Recorder Tools windows. |
 
-For example, enable the protected strategy morph at the top of a strategy:
+For example, enable Gatlin-only mode and the protected morph at the top of a
+strategy:
 
 ```lua
+getgenv().AutoGatlin = true
 getgenv().AutoStratUserMorph = true
 
 local TDS = loadstring(game:HttpGet("https://raw.githubusercontent.com/tessa-says-hi/auto-strat/main/src/Strategy.Luau", true))()
 ```
 
-No `TDS:Morph(...)` call is needed. Globals such as `AutoStratRunner`,
-`AutoStratUserMorphController`, `AutoGatlin`, and `AutoStratRecorder` are
-internal runtime state and should not be set manually.
+No extra `TDS` calls are needed. Once Gatlin-only mode starts, the
+`AutoGatlin` boolean is replaced by its runtime controller and should not be
+changed during the run. Globals such as `AutoStratRunner`,
+`AutoStratUserMorphController`, and `AutoStratRecorder` are internal runtime
+state and should not be set manually.
 
 Generated strategies and teleport resumes load the public Strategy source from
 the repository's `main` branch. Auto Stacker remains a separate FlowAuth-backed
