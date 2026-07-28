@@ -434,7 +434,7 @@ function Recorder:_captureInvoke(channel, action, args, result)
 			return
 		end
 	elseif channel == "Voting" and action == "Skip" then
-		if result[1] == true then
+		if gameState.GameStarted and (tonumber(gameState.Wave) or 0) > 0 and result[1] == true then
 			self:_push("skip", {})
 		end
 		return

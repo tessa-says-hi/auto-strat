@@ -6,6 +6,7 @@ local clone = cloneref or function(value)
 	return value
 end
 
+local CollectionService = clone(game:GetService("CollectionService"))
 local Players = clone(game:GetService("Players"))
 local ReplicatedStorage = clone(game:GetService("ReplicatedStorage"))
 local RunService = clone(game:GetService("RunService"))
@@ -18,6 +19,7 @@ local gameState = require(modules:WaitForChild("GameState"))
 local net = require(modules:WaitForChild("Network"))
 local newNet = require(modules:WaitForChild("NewNetwork"))
 local gameManager = newNet.Channel("GameManager")
+local remoteFunction = clone(ReplicatedStorage:WaitForChild("RemoteFunction"))
 local lobbyId = 3260590327
 local repoRoot = getgenv().AutoStratRoot or "https://raw.githubusercontent.com/tessa-says-hi/auto-strat/main/"
 
@@ -278,6 +280,24 @@ function Strategy:_clearRematch()
 	if self.rematchConn then
 		self.rematchConn:Disconnect()
 		self.rematchConn = nil
+	end
+end
+
+function Strategy:_clearReady()
+	if self.readyAddedConn then
+		self.readyAddedConn:Disconnect()
+		self.readyAddedConn = nil
+	end
+	if self.readyChangedConn then
+		self.readyChangedConn:Disconnect()
+		self.readyChangedConn = nil
+	end
+end
+
+function Strategy:_clearStarted()
+	if self.startedConn then
+		self.startedConn:Disconnect()
+		self.startedConn = nil
 	end
 end
 
@@ -576,7 +596,59 @@ function Strategy:_matchmake()
 	return true
 end
 
-function Strategy:_selectMap()
+function Strategy:_bindReady(seq, name)
+	self:_clearReady()
+	if gameState.GameStarted then
+		return true
+	end
+	self.status = "Waiting for Ready"
+	local sent = false
+
+	local function bind(folder)
+		if sent or self.seq ~= seq or not self.running then
+			return
+		end
+		if self.readyChangedConn then
+			self.readyChangedConn:Disconnect()
+		end
+
+		local function submit()
+			if
+				sent
+				or self.seq ~= seq
+				or not self.running
+				or gameState.GameStarted
+				or folder:GetAttribute("Title") ~= "Ready?"
+				or folder:GetAttribute("Enabled") ~= true
+			then
+				return
+			end
+			sent = true
+			self:_clearReady()
+			self.status = "Submitting Ready"
+			local called, err = pcall(remoteFunction.InvokeServer, remoteFunction, "Voting", "Skip")
+			if self.seq ~= seq then
+				return
+			elseif not called then
+				self.status = "Ready failed: " .. tostring(err)
+			elseif not gameState.GameStarted then
+				self.status = "Waiting for " .. tostring(name or "the match")
+			end
+		end
+
+		self.readyChangedConn = folder.AttributeChanged:Connect(submit)
+		submit()
+	end
+
+	self.readyAddedConn = CollectionService:GetInstanceAddedSignal("VoteManager"):Connect(bind)
+	local current = CollectionService:GetTagged("VoteManager")[1]
+	if current then
+		bind(current)
+	end
+	return true
+end
+
+function Strategy:_selectMap(seq)
 	local wanted = tostring(self.meta.Map or "")
 	local voting = net.Channel("LobbyVoting")
 	local selected = wanted == "" or tostring(gameState.MapName or "") == wanted
@@ -584,9 +656,6 @@ function Strategy:_selectMap()
 	if not selected and self.meta.Override then
 		local ok, success = pcall(voting.InvokeServer, voting, "Override", wanted)
 		selected = ok and success == true
-		if selected then
-			RunService.Heartbeat:Wait()
-		end
 	end
 
 	if not selected then
@@ -611,43 +680,37 @@ function Strategy:_selectMap()
 		end
 	end
 
-	voting:FireServer("Ready")
-	self.status = "Waiting for " .. (wanted ~= "" and wanted or "the match")
-	return true
+	return self:_bindReady(seq, wanted ~= "" and wanted or "the match")
+end
+
+function Strategy:_bindStarted(seq)
+	self:_clearStarted()
+	local began = false
+	local function start(value)
+		if began or value ~= true or self.seq ~= seq or not self.running then
+			return
+		end
+		began = true
+		self:_clearStarted()
+		self:_clearReady()
+		task.spawn(self._play, self, seq)
+	end
+	self.startedConn = gameState.Replicator:GetStateChangedSignal("GameStarted"):Connect(start)
+	start(gameState.GameStarted)
 end
 
 function Strategy:_prepare(seq)
+	self:_bindStarted(seq)
 	if gameState.GameStarted then
 		return true
 	end
-	if self:_mode() == "sandbox" then
-		self.status = "Waiting for Sandbox"
-		local started = os.clock()
-		while self.running and self.seq == seq do
-			if gameState.GameStarted then
-				return true
-			elseif os.clock() - started >= 30 then
-				return false, "Sandbox did not start."
-			end
-			RunService.Heartbeat:Wait()
-		end
-		return false, "Stopped"
-	end
-	task.wait(1)
-	if gameState.GameStarted then
-		return true
-	end
-	local selected, err = self:_selectMap()
-	if not selected then
+
+	local ready, err = self:_selectMap(seq)
+	if not ready then
+		self:_clearStarted()
 		return false, err
 	end
-	while self.running and self.seq == seq do
-		if gameState.GameStarted then
-			return true
-		end
-		RunService.Heartbeat:Wait()
-	end
-	return false, "Stopped"
+	return true
 end
 
 function Strategy:_bindClock()
@@ -750,6 +813,33 @@ function Strategy:_run(action)
 	return false, "Unknown action " .. tostring(action.kind)
 end
 
+function Strategy:_play(seq)
+	if self.seq ~= seq or not self.running then
+		return
+	end
+	self.status = "Waiting for actions"
+	self:_bindClock()
+	local failed = false
+	for index, action in ipairs(self.actions) do
+		if not self:_wait(action, seq) then
+			break
+		end
+		self.status = string.format("Running %s %d/%d", action.kind, index, #self.actions)
+		local ok, success, msg = pcall(self._run, self, action)
+		if not ok or success == false then
+			self.status = tostring(msg or success)
+			failed = true
+			break
+		end
+	end
+	if self.seq == seq then
+		self.running = false
+		if not failed then
+			self.status = "Complete"
+		end
+	end
+end
+
 function Strategy:Run()
 	if self.running then
 		return self
@@ -781,28 +871,6 @@ function Strategy:Run()
 			end
 			return
 		end
-
-		self.status = "Waiting for actions"
-		self:_bindClock()
-		local failed = false
-		for index, action in ipairs(self.actions) do
-			if not self:_wait(action, seq) then
-				break
-			end
-			self.status = string.format("Running %s %d/%d", action.kind, index, #self.actions)
-			local ok, success, msg = pcall(self._run, self, action)
-			if not ok or success == false then
-				self.status = tostring(msg or success)
-				failed = true
-				break
-			end
-		end
-		if self.seq == seq then
-			self.running = false
-			if not failed then
-				self.status = "Complete"
-			end
-		end
 	end)
 	return self
 end
@@ -812,6 +880,8 @@ function Strategy:Stop()
 	self.running = false
 	self.status = "Stopped"
 	self:_clearRematch()
+	self:_clearReady()
+	self:_clearStarted()
 	self.rematching = false
 	self:_clearQueue()
 	if self.timerConn then
