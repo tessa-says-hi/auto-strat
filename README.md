@@ -20,8 +20,9 @@ Use the **Strategy Recorder** window to:
 4. Stop, then copy or save the generated strategy.
 
 The separate **Recorder Tools** window includes Auto Skip and an authenticated
-Auto Stack toggle with a stack amount control. Auto Chain Commander becomes
-available when Auto Gatlin is also loaded.
+Auto Stack toggle with a stack amount control, tower upgrade and sell controls,
+and the upgrade-range viewer. Auto Chain Commander becomes available when Auto
+Gatlin is also loaded.
 
 The recorder currently captures:
 

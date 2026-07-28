@@ -125,6 +125,14 @@ local function shortStatus(value)
 	return tostring(value or ""):match("^[^\r\n]*") or ""
 end
 
+local function clip(value, limit)
+	local text = tostring(value or "")
+	if #text <= limit then
+		return text
+	end
+	return text:sub(1, math.max(limit - 3, 1)) .. "..."
+end
+
 local function isStacker(value)
 	return type(value) == "table"
 		and type(value.SetAutoStacker) == "function"
@@ -211,6 +219,7 @@ function Recorder.new()
 		meta = metadata(),
 		name = "MyStrategy",
 		nextTower = 0,
+		rangeWanted = false,
 		stackAmount = 15,
 		stackStatus = "Protected",
 		stackWanted = false,
@@ -410,21 +419,41 @@ end
 function Recorder:_placed(model, placement, name)
 	model = towerModel(model)
 	if not model then
-		return
+		return false
 	end
 	local id = self.towerIds[model]
-	if not id then
-		self.nextTower = self.nextTower + 1
-		id = self.nextTower
-		self.towerIds[model] = id
+	if id then
+		return false
+	end
+	self.nextTower = self.nextTower + 1
+	id = self.nextTower
+	self.towerIds[model] = id
+
+	local position = placement.Position
+	local pivot = model:GetPivot()
+	if math.abs(position.Y - pivot.Position.Y) > 25 then
+		position = Vector3.new(position.X, pivot.Position.Y, position.Z)
 	end
 	self:_push("place", {
 		id = id,
 		name = name,
-		position = placement.Position,
-		rotation = placement.Rotation,
+		position = position,
+		rotation = placement.Rotation or pivot - pivot.Position,
 		golden = self:_golden(name),
 	})
+	return true
+end
+
+function Recorder:CaptureStackPlacement(model, placement, name)
+	if
+		not self.active
+		or typeof(model) ~= "Instance"
+		or type(placement) ~= "table"
+		or typeof(placement.Position) ~= "Vector3"
+	then
+		return false
+	end
+	return self:_placed(model, placement, name)
 end
 
 function Recorder:_raw(channel, action, args, invoke)
@@ -831,7 +860,7 @@ function Recorder:SetAutoSkip(value)
 	return self
 end
 
-function Recorder:_stackTarget(authorize)
+function Recorder:_toolTarget(authorize)
 	local host = self.host
 	if isStacker(host) then
 		return host
@@ -874,9 +903,25 @@ function Recorder:_stackTarget(authorize)
 		return nil, "Protected stacker did not initialize"
 	end
 
-	self.stackTarget = stacker
-	self.stackOwnsTarget = true
+	self.toolTarget = stacker
+	self.toolOwnsTarget = true
 	return stacker
+end
+
+function Recorder:_callTool(method, authorize, ...)
+	local target, resolveError = self:_toolTarget(authorize)
+	if not target then
+		return false, resolveError
+	end
+	local callback = target[method]
+	if type(callback) ~= "function" then
+		return false, method .. " unavailable"
+	end
+	local ok, result = pcall(callback, target, ...)
+	if not ok then
+		return false, shortStatus(result)
+	end
+	return true, result
 end
 
 function Recorder:SetAutoStacker(value)
@@ -885,7 +930,7 @@ function Recorder:SetAutoStacker(value)
 	self.stackSeq = (self.stackSeq or 0) + 1
 	local seq = self.stackSeq
 
-	local stacker, resolveError = self:_stackTarget(value)
+	local stacker, resolveError = self:_toolTarget(value)
 	if seq ~= self.stackSeq or self.stackWanted ~= value then
 		if stacker and type(stacker.SetAutoStacker) == "function" then
 			pcall(stacker.SetAutoStacker, stacker, false)
@@ -918,7 +963,7 @@ end
 
 function Recorder:SetStackAmount(value)
 	self.stackAmount = math.clamp(math.floor(tonumber(value) or 15), 1, 50)
-	local stacker = self:_stackTarget(false)
+	local stacker = self:_toolTarget(false)
 	if not stacker then
 		return true
 	end
@@ -929,6 +974,27 @@ function Recorder:SetStackAmount(value)
 	end
 	if self.stackWanted then
 		self.stackStatus = string.format("On x%d", self.stackAmount)
+	end
+	return true
+end
+
+function Recorder:SetShowUpgradeRanges(value)
+	value = value == true
+	self.rangeWanted = value
+	local target, resolveError = self:_toolTarget(value)
+	if not target then
+		return not value, resolveError
+	end
+	local callback = target.SetShowUpgradeRanges
+	if type(callback) ~= "function" then
+		return false, "Range viewer unavailable"
+	end
+	local ok, result = pcall(callback, target, value)
+	if not ok then
+		return false, shortStatus(result)
+	end
+	if value and target.ShowUpgradeRanges ~= true then
+		return false, shortStatus(target.UpgradeRangeStatus)
 	end
 	return true
 end
@@ -1103,7 +1169,7 @@ function Recorder:_refreshUi()
 		self:_setUiText("chain", "Chain: Unavailable")
 	end
 
-	local stacker = self:_stackTarget(false)
+	local stacker = self:_toolTarget(false)
 	if stacker and stacker.AutoStacker then
 		self:_setUiText("stack", string.format("Stack: On x%d", tonumber(stacker.StackAmount) or self.stackAmount))
 	elseif self.stackLoading then
@@ -1114,6 +1180,25 @@ function Recorder:_refreshUi()
 		self:_setUiText("stack", "Stack: Off")
 	else
 		self:_setUiText("stack", "Stack: Protected")
+	end
+
+	if stacker and stacker.ShowUpgradeRanges then
+		self:_setUiText("range", "Ranges: On")
+	elseif stacker then
+		self:_setUiText("range", "Ranges: Off")
+	else
+		self:_setUiText("range", "Ranges: Protected")
+	end
+	if not stacker then
+		self:_setUiText("manager", "Tower: Protected")
+	elseif stacker.TowerManagerBusy then
+		self:_setUiText("manager", "Tower: Working")
+	elseif stacker.SellAllArmedUntil and os.clock() <= stacker.SellAllArmedUntil then
+		self:_setUiText("manager", "Tower: Confirm Sell")
+	elseif stacker.ManagedTowerName then
+		self:_setUiText("manager", "Tower: " .. clip(stacker.ManagedTowerName, 14))
+	else
+		self:_setUiText("manager", "Tower: Select one")
 	end
 end
 
@@ -1173,7 +1258,7 @@ function Recorder:_buildUi(library, seq)
 			end
 		end
 	end)
-	local stacker = self:_stackTarget(false)
+	local stacker = self:_toolTarget(false)
 	self.uiButtons.Stack = tools:Toggle("Auto Stack", {
 		default = stacker and stacker.AutoStacker == true or false,
 		flag = "RecorderAutoStacker",
@@ -1201,9 +1286,47 @@ function Recorder:_buildUi(library, seq)
 		end
 	end)
 	tools:Section("")
+	self.uiButtons.Range = tools:Toggle("View Tower Ranges", {
+		default = stacker and stacker.ShowUpgradeRanges == true or false,
+		flag = "RecorderTowerRanges",
+	}, function(value)
+		task.spawn(function()
+			local ok, err = self:SetShowUpgradeRanges(value)
+			if value and not ok then
+				self.status = "Tower ranges failed: " .. shortStatus(err)
+				local button = self.uiButtons and self.uiButtons.Range
+				if button then
+					button:Set(false)
+				end
+			end
+		end)
+	end)
+	local function runTool(method)
+		task.spawn(function()
+			local ok, err = self:_callTool(method, true)
+			if not ok then
+				self.status = "Tower tool failed: " .. shortStatus(err)
+			end
+		end)
+	end
+	self.uiButtons.UpgradeSelected = tools:Button("Upgrade Selected Type", function()
+		runTool("UpgradeSelectedTower")
+	end)
+	self.uiButtons.SellSelected = tools:Button("Sell Selected", function()
+		runTool("SellSelectedTower")
+	end)
+	self.uiButtons.UpgradeAll = tools:Button("Upgrade All", function()
+		runTool("UpgradeAllTowers")
+	end)
+	self.uiButtons.SellAll = tools:Button("Sell All (2x)", function()
+		runTool("SellAllTowers")
+	end)
+	tools:Section("")
 	self.uiRows.skip = tools:Section("")
 	self.uiRows.chain = tools:Section("")
 	self.uiRows.stack = tools:Section("")
+	self.uiRows.range = tools:Section("")
+	self.uiRows.manager = tools:Section("")
 
 	local screen = library.container and library.container.Parent
 	if screen and screen:IsA("ScreenGui") then
@@ -1308,11 +1431,17 @@ function Recorder:Destroy()
 	self.autosaveQueued = false
 	self.stackSeq = (self.stackSeq or 0) + 1
 	self.stackWanted = false
-	if self.stackOwnsTarget and isStacker(self.stackTarget) and type(self.stackTarget.Destroy) == "function" then
-		pcall(self.stackTarget.Destroy, self.stackTarget)
+	local disableRange = self.rangeWanted == true
+	self.rangeWanted = false
+	local toolTarget = self:_toolTarget(false)
+	if disableRange and toolTarget and type(toolTarget.SetShowUpgradeRanges) == "function" then
+		pcall(toolTarget.SetShowUpgradeRanges, toolTarget, false)
 	end
-	self.stackTarget = nil
-	self.stackOwnsTarget = false
+	if self.toolOwnsTarget and isStacker(self.toolTarget) and type(self.toolTarget.Destroy) == "function" then
+		pcall(self.toolTarget.Destroy, self.toolTarget)
+	end
+	self.toolTarget = nil
+	self.toolOwnsTarget = false
 	if
 		#self.actions > 0
 		and (self.autosaveCount ~= #self.actions or self.autosaveName ~= self.name or self.autosaveError)
