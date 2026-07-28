@@ -1,6 +1,22 @@
 local clone = cloneref or function(value)
 	return value
 end
+local getIdentity = getthreadidentity or getidentity or getthreadcontext or get_thread_identity
+local setIdentity = setthreadidentity or setidentity or setthreadcontext or set_thread_identity
+
+local function elevate()
+	local identity = getIdentity and getIdentity()
+	if setIdentity then
+		setIdentity(8)
+	end
+	return identity
+end
+
+local function restore(identity)
+	if setIdentity and identity then
+		setIdentity(identity)
+	end
+end
 
 local Players = clone(game:GetService("Players"))
 local ReplicatedStorage = clone(game:GetService("ReplicatedStorage"))
@@ -316,22 +332,32 @@ function StrategyHUD:_bind()
 end
 
 function StrategyHUD:_animateBanner()
+	local function setArrows(left, right, transparency)
+		local identity = elevate()
+		if left then
+			self.leftArrow.Text = left
+			self.rightArrow.Text = right
+		end
+		if transparency ~= nil then
+			self.leftArrow.TextTransparency = transparency
+			self.rightArrow.TextTransparency = transparency
+		end
+		restore(identity)
+	end
+
 	task.spawn(function()
 		while self.alive do
-			self.leftArrow.Text = "--->"
-			self.rightArrow.Text = "<---"
+			setArrows("--->", "<---", 0)
 			for _ = 1, 3 do
 				if not self.alive then
 					return
 				end
-				self.leftArrow.TextTransparency = 1
-				self.rightArrow.TextTransparency = 1
+				setArrows(nil, nil, 1)
 				task.wait(0.18)
 				if not self.alive then
 					return
 				end
-				self.leftArrow.TextTransparency = 0
-				self.rightArrow.TextTransparency = 0
+				setArrows(nil, nil, 0)
 				task.wait(0.18)
 			end
 			local dashCount = 3
@@ -342,14 +368,11 @@ function StrategyHUD:_animateBanner()
 						return
 					end
 					dashCount = dashCount + step
-					self.leftArrow.Text = string.rep("-", dashCount) .. ">"
-					self.rightArrow.Text = "<" .. string.rep("-", dashCount)
+					setArrows(string.rep("-", dashCount) .. ">", "<" .. string.rep("-", dashCount), 0)
 					task.wait(0.11)
 				end
 			end
-			self.leftArrow.Text = "--->"
-			self.rightArrow.Text = "<---"
-			task.wait(0.4)
+			setArrows("--->", "<---", 0)
 		end
 	end)
 end
@@ -365,6 +388,7 @@ function StrategyHUD:Refresh()
 	if not self.alive then
 		return
 	end
+	local identity = elevate()
 
 	local counts = towerCounts(self.strategy)
 	for _, name in ipairs(self.towerNames) do
@@ -379,6 +403,7 @@ function StrategyHUD:Refresh()
 	self:_setRow("stat:Level", "Level", formatNumber(readValue(player, { "Level", "Rank" })))
 	self:_setRow("stat:Map", "Map", tostring(self.gameState.MapName or self.strategy.meta.Map or "Unknown"))
 	self:_setRow("stat:Time Passed", "Time Passed", formatTime(Workspace:GetServerTimeNow() - self.startedAt))
+	restore(identity)
 end
 
 function StrategyHUD:_clearCamera()
