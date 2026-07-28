@@ -362,6 +362,10 @@ function Strategy:_clearReady()
 		self.readyChangedConn:Disconnect()
 		self.readyChangedConn = nil
 	end
+	if self.readyLobbyConn then
+		self.readyLobbyConn:Disconnect()
+		self.readyLobbyConn = nil
+	end
 end
 
 function Strategy:_clearLobbyVote()
@@ -376,6 +380,10 @@ function Strategy:_clearLobbyVote()
 	if self.lobbyEventConn then
 		self.lobbyEventConn:Disconnect()
 		self.lobbyEventConn = nil
+	end
+	if self.lobbyUiConn then
+		self.lobbyUiConn:Disconnect()
+		self.lobbyUiConn = nil
 	end
 end
 
@@ -689,6 +697,7 @@ function Strategy:_bindReady(seq, name)
 	end
 	self.status = "Waiting for Ready"
 	local sent = false
+	local submitCurrent = function() end
 
 	local function bind(folder)
 		if sent or self.seq ~= seq or not self.running then
@@ -704,6 +713,7 @@ function Strategy:_bindReady(seq, name)
 				or self.seq ~= seq
 				or not self.running
 				or gameState.GameStarted
+				or Workspace:FindFirstChild("IntermissionLobby")
 				or folder:GetAttribute("Title") ~= "Ready?"
 				or folder:GetAttribute("Enabled") ~= true
 			then
@@ -722,10 +732,16 @@ function Strategy:_bindReady(seq, name)
 			end
 		end
 
+		submitCurrent = submit
 		self.readyChangedConn = folder.AttributeChanged:Connect(submit)
 		submit()
 	end
 
+	self.readyLobbyConn = Workspace.ChildRemoved:Connect(function(child)
+		if child.Name == "IntermissionLobby" then
+			submitCurrent()
+		end
+	end)
 	self.readyAddedConn = CollectionService:GetInstanceAddedSignal("VoteManager"):Connect(bind)
 	local current = CollectionService:GetTagged("VoteManager")[1]
 	if current then
@@ -739,7 +755,12 @@ function Strategy:_selectMap(seq)
 	self:_clearLobbyVote()
 
 	local manager = CollectionService:GetTagged("VoteManager")[1]
-	if manager and manager:GetAttribute("Title") == "Ready?" and manager:GetAttribute("Enabled") == true then
+	if
+		not Workspace:FindFirstChild("IntermissionLobby")
+		and manager
+		and manager:GetAttribute("Title") == "Ready?"
+		and manager:GetAttribute("Enabled") == true
+	then
 		return self:_bindReady(seq, wanted ~= "" and wanted or "the match")
 	end
 
@@ -752,6 +773,18 @@ function Strategy:_selectMap(seq)
 		return false
 	end
 
+	local playerGui = lp:FindFirstChildOfClass("PlayerGui")
+	local voting = net.Channel("LobbyVoting")
+	local function lobbyUiReady()
+		local screen = playerGui and playerGui:FindFirstChild("ReactGameIntermission")
+		local frame = screen and screen:FindFirstChild("Frame")
+		local buttons = frame and frame:FindFirstChild("buttons")
+		return buttons
+			and buttons:FindFirstChild("ready")
+			and type(voting.Override) == "function"
+			and type(voting.Vote) == "function"
+	end
+
 	local begun = false
 	local function begin()
 		if
@@ -760,6 +793,7 @@ function Strategy:_selectMap(seq)
 			or not self.running
 			or not Workspace:FindFirstChild("IntermissionLobby")
 			or not boardsReady()
+			or not lobbyUiReady()
 		then
 			return
 		end
@@ -793,13 +827,24 @@ function Strategy:_selectMap(seq)
 			remoteEvent:FireServer("LobbyVoting", "Vote", wanted, pos)
 		end
 
-		self.lobbyEventConn = remoteEvent.OnClientEvent:Connect(function(channel, action, a, _, data)
+		self.lobbyEventConn = remoteEvent.OnClientEvent:Connect(function(channel, action, player, board, data)
 			if channel ~= "LobbyVoting" or self.seq ~= seq or not self.running then
 				return
 			end
 			if action == "Override" and tostring(data or "") == wanted then
+				local index = tonumber(board)
+				if index and index >= 1 and index <= 4 then
+					Workspace:SetAttribute("Map" .. index, wanted)
+				end
 				vote()
-			elseif action == "Vote" and a == lp and type(data) == "table" and tostring(data.map or "") == wanted then
+			elseif
+				action == "Vote"
+				and typeof(player) == "Instance"
+				and player:IsA("Player")
+				and player.UserId == lp.UserId
+				and type(data) == "table"
+				and tostring(data.map or "") == wanted
+			then
 				self:_clearLobbyVote()
 				self.status = "Readying " .. wanted
 				remoteEvent:FireServer("LobbyVoting", "Ready")
@@ -831,8 +876,8 @@ function Strategy:_selectMap(seq)
 		end
 	end
 
-	self.lobbyChildConn = Workspace.ChildAdded:Connect(function(child)
-		if child.Name == "IntermissionLobby" then
+	self.lobbyChildConn = Workspace.DescendantAdded:Connect(function(child)
+		if child.Name == "IntermissionLobby" or child:IsA("ProximityPrompt") then
 			begin()
 		end
 	end)
@@ -841,6 +886,13 @@ function Strategy:_selectMap(seq)
 			begin()
 		end
 	end)
+	if playerGui then
+		self.lobbyUiConn = playerGui.DescendantAdded:Connect(function(child)
+			if child.Name == "ready" then
+				begin()
+			end
+		end)
+	end
 	begin()
 	return true
 end
@@ -980,7 +1032,6 @@ function Strategy:_play(seq)
 	if self.seq ~= seq or not self.running then
 		return
 	end
-	task.spawn(self._showHud, self, seq)
 	self.status = "Waiting for actions"
 	self:_bindClock()
 	local failed = false
@@ -1026,6 +1077,7 @@ function Strategy:Run()
 		return self
 	end
 
+	task.spawn(self._showHud, self, seq)
 	self:_bindRematch(seq)
 	task.spawn(function()
 		local ready, readyErr = self:_prepare(seq)
