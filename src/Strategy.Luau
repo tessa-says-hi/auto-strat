@@ -18,12 +18,14 @@ local lp = clone(Players.LocalPlayer)
 local clientModules = ReplicatedStorage:WaitForChild("Client"):WaitForChild("Modules")
 local shared = ReplicatedStorage:WaitForChild("Shared")
 local modules = shared:WaitForChild("Modules")
+local asset = require(modules:WaitForChild("Asset"))
 local gameState = require(modules:WaitForChild("GameState"))
+local gameRules = require(modules:WaitForChild("GameRules"))
 local net = require(modules:WaitForChild("Network"))
 local newNet = require(modules:WaitForChild("NewNetwork"))
-local playerReplicator = require(
-	clientModules:WaitForChild("Replicators"):WaitForChild("PlayerReplicator")
-)
+local replicators = clientModules:WaitForChild("Replicators")
+local playerReplicator = require(replicators:WaitForChild("PlayerReplicator"))
+local towerReplicator = require(replicators:WaitForChild("TowerReplicator"))
 local tagReplicator = require(clientModules:WaitForChild("TagReplicator"))
 local gameManager = newNet.Channel("GameManager")
 local restartVoting = net.Channel("Voting")
@@ -1121,11 +1123,90 @@ function Strategy:_remaining()
 	return math.max(self.timerRaw - (Workspace:GetServerTimeNow() - self.timerAt), 0)
 end
 
-function Strategy:_wait(action, seq)
+function Strategy:_due(action)
+	local wave = tonumber(gameState.Wave) or 0
+	return wave > action.wave or (wave == action.wave and self:_remaining() <= action.time)
+end
+
+function Strategy:_cash()
+	local player = playerReplicator.GetLocalPlayerRaw()
+	if not player then
+		return nil
+	end
+	local cash = tonumber(player.Cash)
+	if cash ~= nil then
+		return cash
+	end
+	local replicator = player.Replicator
+	local ok, value = replicator and pcall(replicator.Get, replicator, "Cash")
+	return ok and tonumber(value) or nil
+end
+
+function Strategy:_upgradeCost(cost, discount)
+	cost = tonumber(cost)
+	if not cost then
+		return nil
+	end
+
+	cost = cost - ((tonumber(discount) or 0) / 100) * cost
+	local state = ReplicatedStorage:FindFirstChild("State")
+	local priceScale = state and state:FindFirstChild("PriceScale")
+	if priceScale then
+		cost = cost * (tonumber(priceScale.Value) or 1)
+	end
+	if type(gameState.IsModifierEnabled) == "function" and gameState.IsModifierEnabled("Inflation") then
+		cost = math.round(cost * 1.5)
+	end
+	return math.floor(cost * (tonumber(gameRules.Get("UpgradeCostMultiplier")) or 1))
+end
+
+function Strategy:_purchaseCost(action)
+	if action.kind == "place" then
+		local ok, troop = pcall(asset, "Troops", action.name)
+		if not ok or type(troop) ~= "table" or type(troop.Stats) ~= "table" then
+			return nil
+		end
+		local stats = troop.Stats[action.golden and "Golden" or "Default"] or troop.Stats.Default
+		return stats and stats.Defaults and tonumber(stats.Defaults.Price) or nil
+	elseif action.kind ~= "upgrade" then
+		return nil
+	end
+
+	local model = self:_tower(action.id)
+	local tower = model and towerReplicator.getTowerByModel(model)
+	local assetStats = tower and tower.Asset and tower.Asset.Stats
+	if not assetStats then
+		return nil
+	end
+	local stats = assetStats[tower.GoldenPerks and "Golden" or "Default"] or assetStats.Default
+	local upgrade = stats and stats.Upgrades and stats.Upgrades[(tonumber(tower.Upgrade) or 0) + 1]
+	if type(upgrade) == "table" and type(upgrade[action.path]) == "table" then
+		upgrade = upgrade[action.path]
+	end
+	return upgrade and self:_upgradeCost(upgrade.Cost, tower.DiscountBuff) or nil
+end
+
+function Strategy:_purchaseReady(action, blockedCash)
+	if action.kind ~= "place" and action.kind ~= "upgrade" then
+		return false
+	end
+
+	local cash = self:_cash()
+	if not cash or (blockedCash ~= nil and cash == blockedCash) then
+		return false, cash
+	end
+	local ok, cost = pcall(self._purchaseCost, self, action)
+	return ok and cost ~= nil and cash >= cost, cash
+end
+
+function Strategy:_wait(action, seq, blockedCash)
 	while self.running and self.seq == seq do
-		local wave = tonumber(gameState.Wave) or 0
-		if wave > action.wave or (wave == action.wave and self:_remaining() <= action.time) then
-			return true
+		if self:_due(action) then
+			return true, false
+		end
+		local affordable = self:_purchaseReady(action, blockedCash)
+		if affordable then
+			return true, true
 		end
 		RunService.Heartbeat:Wait()
 	end
@@ -1204,17 +1285,30 @@ function Strategy:_play(seq)
 	self:_bindClock()
 	local failed = false
 	for index, action in ipairs(self.actions) do
-		if not self:_wait(action, seq) then
-			break
+		local blockedCash
+		while self.running and self.seq == seq do
+			local ready, early = self:_wait(action, seq, blockedCash)
+			if not ready then
+				break
+			end
+			self.status = string.format("Running %s %d/%d", action.kind, index, #self.actions)
+			local ok, success, msg = pcall(self._run, self, action)
+			if not ok then
+				self.status = tostring(success)
+				failed = true
+				break
+			elseif success ~= false or not early then
+				if success == false then
+					self.status = tostring(msg or success)
+				end
+				break
+			end
+
+			self.status = tostring(msg or "Waiting until this purchase is affordable")
+			blockedCash = self:_cash()
 		end
-		self.status = string.format("Running %s %d/%d", action.kind, index, #self.actions)
-		local ok, success, msg = pcall(self._run, self, action)
-		if not ok then
-			self.status = tostring(success)
-			failed = true
+		if failed or not self.running or self.seq ~= seq then
 			break
-		elseif success == false then
-			self.status = tostring(msg or success)
 		end
 	end
 	if self.seq == seq then
